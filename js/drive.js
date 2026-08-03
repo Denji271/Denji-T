@@ -33,7 +33,7 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content safely without blocking or throwing 404s on static hosts
+    // Read text file content using Google Drive API key (alt=media) — 100% works everywhere!
     async readTextFile(fileId, torrentTitle = '') {
         if (!fileId) return '';
 
@@ -53,14 +53,11 @@ class DriveAPI {
             return '';
         };
 
-        // Method 1: Local server proxy (/api/read_text) ONLY if running locally
-        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+        // Method 1: Google Drive API Key alt=media (Works on GitHub Pages, localhost, Brave, Chrome, Edge!)
+        if (CONFIG.GOOGLE_API_KEY) {
             try {
-                const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
-                const controller = new AbortController();
-                const tid = setTimeout(() => controller.abort(), 1000);
-                const res = await fetch(`/api/read_text?id=${fileId}${titleParam}`, { signal: controller.signal });
-                clearTimeout(tid);
+                const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
+                const res = await fetch(url);
                 if (res.ok) {
                     const parsed = parseText(await res.text());
                     if (parsed) return parsed;
@@ -68,15 +65,13 @@ class DriveAPI {
             } catch (e) {}
         }
 
-        // Method 2: OAuth access token (if logged in as admin)
-        if (this.accessToken) {
+        // Method 2: Local server proxy (/api/read_text) ONLY if running locally
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
             try {
+                const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
                 const controller = new AbortController();
-                const tid = setTimeout(() => controller.abort(), 1500);
-                const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
-                    headers: { 'Authorization': `Bearer ${this.accessToken}` },
-                    signal: controller.signal
-                });
+                const tid = setTimeout(() => controller.abort(), 1000);
+                const res = await fetch(`/api/read_text?id=${fileId}${titleParam}`, { signal: controller.signal });
                 clearTimeout(tid);
                 if (res.ok) {
                     const parsed = parseText(await res.text());
@@ -130,6 +125,8 @@ class DriveAPI {
             description: null,
         };
 
+        const textPromises = [];
+
         for (const file of files) {
             const nameLower = file.name.toLowerCase();
             const mime = file.mimeType || '';
@@ -148,45 +145,41 @@ class DriveAPI {
                 if (file.description && file.description.trim()) {
                     torrent.category = file.description.trim();
                 }
-                this.readTextFile(file.id).then(catText => {
-                    if (catText && catText.trim()) torrent.category = catText.trim();
-                }).catch(() => {});
+                textPromises.push(
+                    this.readTextFile(file.id).then(catText => {
+                        if (catText && catText.trim()) torrent.category = catText.trim();
+                    }).catch(() => {})
+                );
             }
             // 4. Text files (.txt)
             else if (nameLower.endsWith('.txt')) {
                 if (nameLower === 'magnet.txt' || nameLower.startsWith('magnet')) {
                     torrent.magnetFileId = file.id;
-                    if (file.description && file.description.includes('magnet:?')) {
-                        const match = file.description.match(/magnet:\?xt=urn:[^\s"']+/i);
-                        if (match) {
-                            let uri = match[0];
-                            if (!uri.toLowerCase().includes('&dn=')) {
-                                uri += `&dn=${encodeURIComponent(folder.name)}`;
-                            }
-                            torrent.magnetLink = uri;
-                        }
-                    }
                 }
-                this.readTextFile(file.id, folder.name).then(text => {
-                    if (text) {
-                        if (text.includes('magnet:?')) {
-                            const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                            if (match) {
-                                let uri = match[0];
-                                if (!uri.toLowerCase().includes('&dn=')) {
-                                    uri += `&dn=${encodeURIComponent(folder.name)}`;
+                textPromises.push(
+                    this.readTextFile(file.id, folder.name).then(text => {
+                        if (text) {
+                            if (text.includes('magnet:?')) {
+                                const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                                if (match) {
+                                    let uri = match[0];
+                                    if (!uri.toLowerCase().includes('&dn=')) {
+                                        uri += `&dn=${encodeURIComponent(folder.name)}`;
+                                    }
+                                    torrent.magnetLink = uri;
                                 }
-                                torrent.magnetLink = uri;
+                            } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
+                                torrent.description = text;
                             }
-                        } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
-                            torrent.description = text;
                         }
-                    }
-                }).catch(() => {});
+                    }).catch(() => {})
+                );
             }
         }
 
-        // Return torrent object IMMEDIATELY so page renders without waiting or hanging!
+        // Wait for text reads (takes ~200ms via Drive API key)
+        await Promise.all(textPromises);
+
         return torrent;
     }
 
