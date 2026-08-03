@@ -36,12 +36,9 @@ function getPasscodes() {
     return combined;
 }
 
-// Save passcodes list (localStorage + sync to Google Drive!)
+// Save passcodes list
 function savePasscodes(passcodes) {
     localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
-    if (typeof driveAPI !== 'undefined' && driveAPI.savePasscodesToDrive) {
-        driveAPI.savePasscodesToDrive(passcodes).catch(e => console.error('Drive passcode sync error:', e));
-    }
 }
 
 // Add or update a passcode
