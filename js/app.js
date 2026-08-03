@@ -156,7 +156,7 @@ class App {
                         <h3 class="card-title" title="${torrent.title}">${torrent.title}</h3>
                         ${dateStr ? `<p class="card-date">${dateStr}</p>` : ''}
                         <div class="card-actions">
-                            ${(torrent.magnetLink || torrent.magnetFileId) ? `<a href="${torrent.magnetLink || ('https://drive.google.com/uc?export=download&id=' + torrent.magnetFileId)}" class="btn btn-magnet" onclick="event.stopPropagation();" title="Megnyitás Deluge / Torrent klienssel">🧲 Magnet</a>` : ''}
+                            ${(torrent.magnetLink || torrent.magnetFileId) ? `<button class="btn btn-magnet" onclick="event.stopPropagation(); app.openMagnet('${torrent.id}')" title="Megnyitás Deluge / Torrent klienssel">🧲 Magnet</button>` : ''}
                             ${torrent.torrentFileId ? `<button class="btn btn-torrent" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')" title="Torrent fájl letöltése">📥 Torrent</button>` : ''}
                         </div>
                     </div>
@@ -385,7 +385,7 @@ class App {
         let magnetUri = '';
         let torrent = null;
 
-        if (typeof torrentIdOrLink === 'string' && torrentIdOrLink.includes('magnet:?')) {
+        if (typeof torrentIdOrLink === 'string' && torrentIdOrLink.startsWith('magnet:?')) {
             magnetUri = torrentIdOrLink.trim();
         } else {
             torrent = this.torrents.find(t => t.id === torrentIdOrLink);
@@ -394,11 +394,11 @@ class App {
             }
         }
 
-        // On-demand fetch if not pre-loaded
+        // On-demand fetch via Google Drive API Key if not pre-loaded yet
         if (!magnetUri && torrent && torrent.magnetFileId) {
             this.showToast('Magnet link beolvasása...', 'info');
             try {
-                const text = await driveAPI.readTextFile(torrent.magnetFileId);
+                const text = await driveAPI.readTextFile(torrent.magnetFileId, torrent.title);
                 if (text && text.includes('magnet:?')) {
                     const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
                     magnetUri = match ? match[0] : text.trim();
@@ -409,11 +409,11 @@ class App {
             }
         }
 
-        if (magnetUri) {
+        if (magnetUri && magnetUri.startsWith('magnet:?')) {
             if (!magnetUri.toLowerCase().includes('&dn=') && torrent && torrent.title) {
                 magnetUri += `&dn=${encodeURIComponent(torrent.title)}`;
             }
-            // Synchronous navigation directly triggers the browser "Open Deluge?" prompt
+            // Trigger OS native protocol prompt ("Open deluge.exe?")
             window.location.href = magnetUri;
         } else {
             this.showToast('Nem található érvényes magnet link!', 'error');
@@ -454,7 +454,7 @@ class App {
         const actionsEl = modal.querySelector('.detail-actions');
         actionsEl.innerHTML = '';
         if (torrent.magnetLink || torrent.magnetFileId) {
-            actionsEl.innerHTML += `<a href="${torrent.magnetLink || ('https://drive.google.com/uc?export=download&id=' + torrent.magnetFileId)}" class="btn btn-magnet btn-lg">🧲 Megnyitás Deluge-al</a>`;
+            actionsEl.innerHTML += `<button class="btn btn-magnet btn-lg" onclick="app.openMagnet('${torrent.id}')">🧲 Megnyitás Deluge-al</button>`;
         }
         if (torrent.torrentFileId) {
             actionsEl.innerHTML += `<button class="btn btn-torrent btn-lg" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent Fájl Letöltése</button>`;
