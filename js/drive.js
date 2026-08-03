@@ -53,7 +53,22 @@ class DriveAPI {
             return '';
         };
 
-        // Method 1: Local server proxy (/api/read_text) ONLY if running locally
+        // Method 1: Google Drive API Key alt=media (works on GitHub Pages, localhost, everywhere!)
+        if (CONFIG.GOOGLE_API_KEY) {
+            try {
+                const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 3000);
+                const res = await fetch(url, { signal: controller.signal });
+                clearTimeout(tid);
+                if (res.ok) {
+                    const parsed = parseText(await res.text());
+                    if (parsed) return parsed;
+                }
+            } catch (e) {}
+        }
+
+        // Method 2: Local server proxy (/api/read_text) — fallback for localhost
         if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
             try {
                 const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
@@ -68,7 +83,7 @@ class DriveAPI {
             } catch (e) {}
         }
 
-        // Method 2: OAuth access token (if logged in as admin)
+        // Method 3: OAuth access token (if logged in as admin)
         if (this.accessToken) {
             try {
                 const controller = new AbortController();
