@@ -33,26 +33,33 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content safely using local server proxy with magnet display name support (&dn=)
+    // Read text file content safely with GitHub Pages CORS fallbacks & magnet display name support (&dn=)
     async readTextFile(fileId, torrentTitle = '') {
         if (!fileId) return '';
 
-        const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
+        const parseText = (text) => {
+            if (!text) return '';
+            if (text.includes('magnet:?')) {
+                const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                let uri = match ? match[0] : text.trim();
+                if (!uri.toLowerCase().includes('&dn=') && torrentTitle) {
+                    uri += `&dn=${encodeURIComponent(torrentTitle)}`;
+                }
+                return uri;
+            }
+            if (!text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
+                return text.trim();
+            }
+            return '';
+        };
 
-        // Method 1: Local server proxy (/api/read_text)
+        // Method 1: Local server proxy (/api/read_text) if running locally
         try {
+            const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
             const res = await fetch(`/api/read_text?id=${fileId}${titleParam}`);
             if (res.ok) {
-                let text = await res.text();
-                if (text && text.includes('magnet:?')) {
-                    const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                    let uri = match ? match[0] : text.trim();
-                    if (!uri.toLowerCase().includes('&dn=') && torrentTitle) {
-                        uri += `&dn=${encodeURIComponent(torrentTitle)}`;
-                    }
-                    return uri;
-                }
-                if (text && !text.includes('<!DOCTYPE html>')) return text.trim();
+                const parsed = parseText(await res.text());
+                if (parsed) return parsed;
             }
         } catch (e) {}
 
@@ -63,19 +70,32 @@ class DriveAPI {
                     headers: { 'Authorization': `Bearer ${this.accessToken}` }
                 });
                 if (res.ok) {
-                    let text = await res.text();
-                    if (text && text.includes('magnet:?')) {
-                        const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                        let uri = match ? match[0] : text.trim();
-                        if (!uri.toLowerCase().includes('&dn=') && torrentTitle) {
-                            uri += `&dn=${encodeURIComponent(torrentTitle)}`;
-                        }
-                        return uri;
-                    }
-                    if (text && !text.includes('<!DOCTYPE html>')) return text.trim();
+                    const parsed = parseText(await res.text());
+                    if (parsed) return parsed;
                 }
             } catch (e) {}
         }
+
+        // Method 3: AllOrigins CORS proxy (Works on GitHub Pages for static sites!)
+        try {
+            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent('https://drive.google.com/uc?export=download&id=' + fileId)}`;
+            const res = await fetch(proxyUrl);
+            if (res.ok) {
+                const json = await res.json();
+                const parsed = parseText(json.contents || '');
+                if (parsed) return parsed;
+            }
+        } catch (e) {}
+
+        // Method 4: CodeTabs CORS proxy fallback for GitHub Pages
+        try {
+            const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent('https://drive.google.com/uc?export=download&id=' + fileId)}`;
+            const res = await fetch(proxyUrl);
+            if (res.ok) {
+                const parsed = parseText(await res.text());
+                if (parsed) return parsed;
+            }
+        } catch (e) {}
 
         return '';
     }
