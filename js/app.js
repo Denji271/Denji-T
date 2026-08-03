@@ -11,9 +11,9 @@ class App {
 
     // Initialize the app
     async init() {
-        // Sync passcodes from Google Drive automatically so all friends can log in
+        // Load passcodes from Google Drive so friends on other devices can log in
         try {
-            await driveAPI.loadPasscodesFromDrive();
+            await this.syncPasscodesFromDrive();
         } catch (e) {}
 
         // Check login state
@@ -23,6 +23,34 @@ class App {
             this.showLoginPage();
         }
         this.bindEvents();
+    }
+
+    // Fetch passcodes.json from Google Drive root folder (uses API key, no auth needed)
+    async syncPasscodesFromDrive() {
+        if (!CONFIG.GOOGLE_API_KEY || !CONFIG.DRIVE_ROOT_FOLDER_ID) return;
+        try {
+            // Find passcodes.json in root folder
+            const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id)`;
+            const searchRes = await fetch(searchUrl);
+            if (!searchRes.ok) return;
+            const searchData = await searchRes.json();
+            const files = searchData.files || [];
+            if (files.length === 0) return;
+
+            // Read file content
+            const fileUrl = `https://www.googleapis.com/drive/v3/files/${files[0].id}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
+            const fileRes = await fetch(fileUrl);
+            if (!fileRes.ok) return;
+            const text = await fileRes.text();
+            if (text && text.trim().startsWith('[')) {
+                const passcodes = JSON.parse(text.trim());
+                if (Array.isArray(passcodes) && passcodes.length > 0) {
+                    localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
+                }
+            }
+        } catch (e) {
+            console.log('Passcode sync skipped:', e.message);
+        }
     }
 
     showLoginPage() {
@@ -273,7 +301,7 @@ class App {
         });
 
         // Add passcode form submission
-        document.getElementById('add-passcode-form')?.addEventListener('submit', (e) => {
+        document.getElementById('add-passcode-form')?.addEventListener('submit', async (e) => {
             e.preventDefault();
             const name = document.getElementById('new-friend-name').value.trim();
             const code = document.getElementById('new-friend-code').value.trim();
@@ -282,6 +310,8 @@ class App {
                 this.showToast(`Kód elmentve: ${name} (${code})`, 'success');
                 document.getElementById('add-passcode-form').reset();
                 this.renderPasscodeList();
+                // Sync to Drive so friends on other devices can log in
+                await this.uploadPasscodesToDrive();
             }
         });
 
@@ -377,10 +407,48 @@ class App {
         `).join('');
     }
 
-    handleDeletePasscode(id) {
+    async handleDeletePasscode(id) {
         deletePasscode(id);
         this.showToast('Kód törölve!', 'info');
         this.renderPasscodeList();
+        // Sync to Drive so friends on other devices can log in
+        await this.uploadPasscodesToDrive();
+    }
+
+    // Upload passcodes.json to Google Drive (admin only, uses OAuth)
+    async uploadPasscodesToDrive() {
+        if (!isAdmin()) return;
+        try {
+            const passcodes = getPasscodes();
+            const content = JSON.stringify(passcodes, null, 2);
+
+            // Check if passcodes.json already exists
+            const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id)`;
+            const searchRes = await fetch(searchUrl);
+            const searchData = await searchRes.json();
+            const existingFiles = searchData.files || [];
+
+            const token = await driveAPI.getAccessToken();
+
+            if (existingFiles.length > 0) {
+                // Update existing file
+                await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingFiles[0].id}?uploadType=media`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: content
+                });
+            } else {
+                // Create new file
+                await driveAPI.uploadTextFile(content, CONFIG.DRIVE_ROOT_FOLDER_ID, 'passcodes.json');
+            }
+            this.showToast('Kódok szinkronizálva a Drive-ra!', 'success');
+        } catch (e) {
+            console.error('Failed to upload passcodes to Drive:', e);
+            this.showToast('Drive szinkronizálás sikertelen', 'error');
+        }
     }
 
     // Open magnet link in desktop torrent app (Deluge, uTorrent, qBittorrent, etc.)
