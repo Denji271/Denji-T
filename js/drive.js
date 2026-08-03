@@ -33,52 +33,56 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content with strict 1.5s timeout to prevent hanging UI
-    async readTextFile(fileId) {
+    // Read text file content safely using local server proxy with magnet display name support (&dn=)
+    async readTextFile(fileId, torrentTitle = '') {
         if (!fileId) return '';
-        
-        // Method 1: Drive API with AbortController 1.5s timeout
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
 
+        const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
+
+        // Method 1: Local server proxy (/api/read_text)
         try {
-            const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
-            const res = await fetch(url, { signal: controller.signal });
-            clearTimeout(timeoutId);
+            const res = await fetch(`/api/read_text?id=${fileId}${titleParam}`);
             if (res.ok) {
-                const text = await res.text();
-                if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
-                    return text;
+                let text = await res.text();
+                if (text && text.includes('magnet:?')) {
+                    const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                    let uri = match ? match[0] : text.trim();
+                    if (!uri.toLowerCase().includes('&dn=') && torrentTitle) {
+                        uri += `&dn=${encodeURIComponent(torrentTitle)}`;
+                    }
+                    return uri;
                 }
+                if (text && !text.includes('<!DOCTYPE html>')) return text.trim();
             }
-        } catch (e) {
-            clearTimeout(timeoutId);
-        }
+        } catch (e) {}
 
-        // Method 2: Public UC export=view fallback with AbortController 1.5s timeout
-        const controller2 = new AbortController();
-        const timeoutId2 = setTimeout(() => controller2.abort(), 1500);
-
-        try {
-            const ucUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
-            const res = await fetch(ucUrl, { signal: controller2.signal });
-            clearTimeout(timeoutId2);
-            if (res.ok) {
-                const text = await res.text();
-                if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
-                    return text;
+        // Method 2: OAuth access token (if logged in as admin)
+        if (this.accessToken) {
+            try {
+                const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+                    headers: { 'Authorization': `Bearer ${this.accessToken}` }
+                });
+                if (res.ok) {
+                    let text = await res.text();
+                    if (text && text.includes('magnet:?')) {
+                        const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                        let uri = match ? match[0] : text.trim();
+                        if (!uri.toLowerCase().includes('&dn=') && torrentTitle) {
+                            uri += `&dn=${encodeURIComponent(torrentTitle)}`;
+                        }
+                        return uri;
+                    }
+                    if (text && !text.includes('<!DOCTYPE html>')) return text.trim();
                 }
-            }
-        } catch (e) {
-            clearTimeout(timeoutId2);
+            } catch (e) {}
         }
 
         return '';
     }
 
-    // Get cover image URL
+    // Get cover image URL (Google CDN - works in all browsers including Brave with no CORS/referer restrictions)
     getCoverImageUrl(fileId) {
-        return `https://drive.google.com/thumbnail?id=${fileId}&sz=w400`;
+        return `https://lh3.googleusercontent.com/d/${fileId}`;
     }
 
     // Initialize: discover category folder IDs
@@ -112,6 +116,7 @@ class DriveAPI {
             createdTime: folder.createdTime,
             coverUrl: null,
             magnetLink: null,
+            magnetFileId: null,
             torrentFileId: null,
             torrentFileName: null,
             description: null,
@@ -142,11 +147,19 @@ class DriveAPI {
             }
             // 4. Text files (.txt)
             else if (nameLower.endsWith('.txt')) {
+                if (nameLower === 'magnet.txt' || nameLower.startsWith('magnet')) {
+                    torrent.magnetFileId = file.id;
+                }
                 textPromises.push(
-                    this.readTextFile(file.id).then(text => {
+                    this.readTextFile(file.id, folder.name).then(text => {
                         const trimmed = text ? text.trim() : '';
-                        if (trimmed.startsWith('magnet:?')) {
-                            torrent.magnetLink = trimmed;
+                        if (trimmed.includes('magnet:?')) {
+                            let uri = trimmed;
+                            if (!uri.toLowerCase().includes('&dn=')) {
+                                uri += `&dn=${encodeURIComponent(folder.name)}`;
+                            }
+                            torrent.magnetLink = uri;
+                            torrent.magnetFileId = file.id;
                         } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
                             torrent.description = trimmed;
                         }
@@ -155,7 +168,7 @@ class DriveAPI {
             }
         }
 
-        // Wait for all text reads in parallel (max 1.5 seconds)
+        // Wait for text reads in parallel (max 2 seconds)
         await Promise.all(textPromises);
 
         return torrent;
