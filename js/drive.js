@@ -33,7 +33,7 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content safely without blocking or throwing 403/404 errors in DevTools
+    // Read text file content (localhost proxy or OAuth only — alt=media&key gives 403)
     async readTextFile(fileId, torrentTitle = '') {
         if (!fileId) return '';
 
@@ -53,22 +53,7 @@ class DriveAPI {
             return '';
         };
 
-        // Method 1: Google Drive API Key alt=media (works on GitHub Pages, localhost, everywhere!)
-        if (CONFIG.GOOGLE_API_KEY) {
-            try {
-                const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
-                const controller = new AbortController();
-                const tid = setTimeout(() => controller.abort(), 3000);
-                const res = await fetch(url, { signal: controller.signal });
-                clearTimeout(tid);
-                if (res.ok) {
-                    const parsed = parseText(await res.text());
-                    if (parsed) return parsed;
-                }
-            } catch (e) {}
-        }
-
-        // Method 2: Local server proxy (/api/read_text) — fallback for localhost
+        // Method 1: Local server proxy (/api/read_text) — only on localhost
         if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
             try {
                 const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
@@ -83,7 +68,7 @@ class DriveAPI {
             } catch (e) {}
         }
 
-        // Method 3: OAuth access token (if logged in as admin)
+        // Method 2: OAuth access token (admin only)
         if (this.accessToken) {
             try {
                 const controller = new AbortController();
@@ -236,6 +221,56 @@ class DriveAPI {
         this.cache.clear();
     }
 
+    // One-time migration: reads magnet.txt/kategoria.txt content via OAuth and stores in file description
+    // Run once from admin console: driveAPI.fixDescriptions()
+    async fixDescriptions() {
+        const token = await this.getAccessToken();
+        const rootFolders = await this.listFolders(CONFIG.DRIVE_ROOT_FOLDER_ID);
+        let fixed = 0;
+
+        for (const folder of rootFolders) {
+            const files = await this.listFiles(folder.id);
+            // Check subfolders too (for category-based folder structure)
+            const subFolders = files.filter(f => f.mimeType === 'application/vnd.google-apps.folder');
+            const allFolders = subFolders.length > 0 ? subFolders : [folder];
+            const isCategory = subFolders.length > 0;
+
+            for (const tf of allFolders) {
+                const tFiles = isCategory ? await this.listFiles(tf.id) : files;
+                for (const file of tFiles) {
+                    const nameLower = file.name.toLowerCase();
+                    if ((nameLower === 'magnet.txt' || nameLower === 'kategoria.txt') && !file.description) {
+                        try {
+                            // Read content via OAuth
+                            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
+                                headers: { 'Authorization': `Bearer ${token}` }
+                            });
+                            if (res.ok) {
+                                const text = (await res.text()).trim();
+                                if (text) {
+                                    // Set description
+                                    await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}`, {
+                                        method: 'PATCH',
+                                        headers: {
+                                            'Authorization': `Bearer ${token}`,
+                                            'Content-Type': 'application/json'
+                                        },
+                                        body: JSON.stringify({ description: text })
+                                    });
+                                    console.log(`✅ Fixed description for ${tf.name}/${file.name}: ${text.substring(0, 60)}...`);
+                                    fixed++;
+                                }
+                            }
+                        } catch (e) {
+                            console.error(`❌ Failed for ${tf.name}/${file.name}:`, e);
+                        }
+                    }
+                }
+            }
+        }
+        console.log(`Done! Fixed ${fixed} file descriptions.`);
+    }
+
     // Google OAuth2 - initialize the Google Identity Services
     initOAuth() {
         const clientId = CONFIG.GOOGLE_CLIENT_ID || localStorage.getItem('denjit_client_id');
@@ -326,13 +361,16 @@ class DriveAPI {
         return await res.json();
     }
 
-    // Upload a file to a folder
-    async uploadFile(file, folderId, fileName) {
+    // Upload a file to a folder (with optional description metadata)
+    async uploadFile(file, folderId, fileName, fileDescription = '') {
         const token = await this.getAccessToken();
         const metadata = {
             name: fileName || file.name,
             parents: [folderId]
         };
+        if (fileDescription) {
+            metadata.description = fileDescription;
+        }
 
         const formData = new FormData();
         formData.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
@@ -349,11 +387,11 @@ class DriveAPI {
         return await res.json();
     }
 
-    // Upload a text file (for magnet.txt, leiras.txt)
-    async uploadTextFile(content, folderId, fileName) {
+    // Upload a text file with optional description (description is used for metadata-only access on GitHub Pages)
+    async uploadTextFile(content, folderId, fileName, fileDescription = '') {
         const blob = new Blob([content], { type: 'text/plain' });
         const file = new File([blob], fileName, { type: 'text/plain' });
-        return this.uploadFile(file, folderId, fileName);
+        return this.uploadFile(file, folderId, fileName, fileDescription);
     }
 
     // Add a new torrent: creates folder directly in root Drive folder + uploads files
@@ -361,9 +399,9 @@ class DriveAPI {
         // Create the torrent folder directly inside the root Google Drive folder
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
-        // Upload kategoria.txt so the website knows the category (Játék / Film / Sorozat)
+        // Upload kategoria.txt (description = category name for GitHub Pages metadata access)
         if (category) {
-            await this.uploadTextFile(category, folder.id, 'kategoria.txt');
+            await this.uploadTextFile(category, folder.id, 'kategoria.txt', category);
         }
 
         // Upload cover image
@@ -372,9 +410,9 @@ class DriveAPI {
             await this.uploadFile(coverFile, folder.id, `cover.${ext}`);
         }
 
-        // Upload magnet.txt
+        // Upload magnet.txt (description = magnet URI for GitHub Pages metadata access)
         if (magnetLink) {
-            await this.uploadTextFile(magnetLink.trim(), folder.id, 'magnet.txt');
+            await this.uploadTextFile(magnetLink.trim(), folder.id, 'magnet.txt', magnetLink.trim());
         }
 
         // Upload .torrent file
