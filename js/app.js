@@ -148,15 +148,15 @@ class App {
 
             return `
                 <div class="torrent-card" style="--card-index: ${index}" data-id="${torrent.id}">
-                    <div class="card-cover" style="${coverStyle}">
-                        ${!torrent.coverUrl ? `<div class="card-cover-placeholder">${categoryInfo.emoji}</div>` : ''}
+                    <div class="card-cover">
+                        ${torrent.coverUrl ? `<img src="${torrent.coverUrl}" referrerpolicy="no-referrer" class="card-cover-img" alt="${this.escapeHtml(torrent.title)}">` : `<div class="card-cover-placeholder">${categoryInfo.emoji}</div>`}
                         <span class="category-badge" style="background: ${categoryInfo.color}">${categoryInfo.emoji} ${torrent.category}</span>
                     </div>
                     <div class="card-body">
                         <h3 class="card-title" title="${torrent.title}">${torrent.title}</h3>
                         ${dateStr ? `<p class="card-date">${dateStr}</p>` : ''}
                         <div class="card-actions">
-                            ${torrent.magnetLink ? `<button class="btn btn-magnet" onclick="app.openMagnet('${this.escapeHtml(torrent.magnetLink)}')" title="Megnyitás torrent klienssel">🧲 Magnet</button>` : ''}
+                            ${(torrent.magnetLink || torrent.magnetFileId) ? `<a href="${torrent.magnetLink || ('https://drive.google.com/uc?export=download&id=' + torrent.magnetFileId)}" class="btn btn-magnet" onclick="event.stopPropagation();" title="Megnyitás Deluge / Torrent klienssel">🧲 Magnet</a>` : ''}
                             ${torrent.torrentFileId ? `<button class="btn btn-torrent" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')" title="Torrent fájl letöltése">📥 Torrent</button>` : ''}
                         </div>
                     </div>
@@ -378,9 +378,46 @@ class App {
         this.renderPasscodeList();
     }
 
-    // Open magnet link
-    openMagnet(magnetLink) {
-        window.location.href = magnetLink.trim();
+    // Open magnet link in desktop torrent app (Deluge, uTorrent, qBittorrent, etc.)
+    async openMagnet(torrentIdOrLink) {
+        if (!torrentIdOrLink) return;
+
+        let magnetUri = '';
+        let torrent = null;
+
+        if (typeof torrentIdOrLink === 'string' && torrentIdOrLink.includes('magnet:?')) {
+            magnetUri = torrentIdOrLink.trim();
+        } else {
+            torrent = this.torrents.find(t => t.id === torrentIdOrLink);
+            if (torrent) {
+                magnetUri = torrent.magnetLink || '';
+            }
+        }
+
+        // On-demand fetch if not pre-loaded
+        if (!magnetUri && torrent && torrent.magnetFileId) {
+            this.showToast('Magnet link beolvasása...', 'info');
+            try {
+                const text = await driveAPI.readTextFile(torrent.magnetFileId);
+                if (text && text.includes('magnet:?')) {
+                    const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                    magnetUri = match ? match[0] : text.trim();
+                    torrent.magnetLink = magnetUri;
+                }
+            } catch (e) {
+                console.error('Failed to fetch magnet:', e);
+            }
+        }
+
+        if (magnetUri) {
+            if (!magnetUri.toLowerCase().includes('&dn=') && torrent && torrent.title) {
+                magnetUri += `&dn=${encodeURIComponent(torrent.title)}`;
+            }
+            // Synchronous navigation directly triggers the browser "Open Deluge?" prompt
+            window.location.href = magnetUri;
+        } else {
+            this.showToast('Nem található érvényes magnet link!', 'error');
+        }
     }
 
     // Download torrent file
@@ -406,8 +443,9 @@ class App {
             : '';
 
         const modal = document.getElementById('detail-modal');
-        modal.querySelector('.detail-cover').style.backgroundImage = torrent.coverUrl ? `url('${torrent.coverUrl}')` : '';
-        modal.querySelector('.detail-cover').classList.toggle('no-cover', !torrent.coverUrl);
+        const coverEl = modal.querySelector('.detail-cover');
+        coverEl.innerHTML = torrent.coverUrl ? `<img src="${torrent.coverUrl}" referrerpolicy="no-referrer" class="card-cover-img" alt="${this.escapeHtml(torrent.title)}">` : '';
+        coverEl.classList.toggle('no-cover', !torrent.coverUrl);
         modal.querySelector('.detail-title').textContent = torrent.title;
         modal.querySelector('.detail-category').innerHTML = `<span style="color: ${categoryInfo.color}">${categoryInfo.emoji} ${torrent.category}</span>`;
         modal.querySelector('.detail-date').textContent = dateStr;
@@ -415,8 +453,8 @@ class App {
         
         const actionsEl = modal.querySelector('.detail-actions');
         actionsEl.innerHTML = '';
-        if (torrent.magnetLink) {
-            actionsEl.innerHTML += `<button class="btn btn-magnet btn-lg" onclick="app.openMagnet('${this.escapeHtml(torrent.magnetLink)}')">🧲 Megnyitás Magnet Linkkel</button>`;
+        if (torrent.magnetLink || torrent.magnetFileId) {
+            actionsEl.innerHTML += `<a href="${torrent.magnetLink || ('https://drive.google.com/uc?export=download&id=' + torrent.magnetFileId)}" class="btn btn-magnet btn-lg">🧲 Megnyitás Deluge-al</a>`;
         }
         if (torrent.torrentFileId) {
             actionsEl.innerHTML += `<button class="btn btn-torrent btn-lg" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent Fájl Letöltése</button>`;
