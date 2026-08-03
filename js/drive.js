@@ -2,6 +2,73 @@ class DriveAPI {
     constructor() {
         this.cache = new Map();
         this.categoryFolderIds = {}; // Maps category name to folder ID
+        this.passcodesFileId = null;
+    }
+
+    // Fetch passcodes.json from Google Drive root folder so passcodes are synced across all devices!
+    async loadPasscodesFromDrive() {
+        if (!CONFIG.GOOGLE_API_KEY || !CONFIG.DRIVE_ROOT_FOLDER_ID) return null;
+        try {
+            const url = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id,name)`;
+            const res = await fetch(url);
+            if (!res.ok) return null;
+            const data = await res.json();
+            const files = data.files || [];
+            if (files.length > 0) {
+                const fileId = files[0].id;
+                this.passcodesFileId = fileId;
+                const fileUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
+                const textRes = await fetch(fileUrl);
+                if (textRes.ok) {
+                    const text = await textRes.text();
+                    if (text && text.trim().startsWith('[')) {
+                        const passcodes = JSON.parse(text.trim());
+                        if (Array.isArray(passcodes)) {
+                            localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
+                            return passcodes;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load passcodes from Drive:', e);
+        }
+        return null;
+    }
+
+    // Save passcodes.json to Google Drive root folder
+    async savePasscodesToDrive(passcodes) {
+        if (!CONFIG.DRIVE_ROOT_FOLDER_ID) return;
+        const content = JSON.stringify(passcodes, null, 2);
+        try {
+            const token = await this.getAccessToken();
+            if (!this.passcodesFileId) {
+                const url = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id,name)`;
+                const res = await fetch(url);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.files && data.files.length > 0) {
+                        this.passcodesFileId = data.files[0].id;
+                    }
+                }
+            }
+
+            if (this.passcodesFileId) {
+                await fetch(`https://www.googleapis.com/upload/drive/v3/files/${this.passcodesFileId}?uploadType=media`, {
+                    method: 'PATCH',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: content
+                });
+            } else {
+                const file = await this.uploadTextFile(content, CONFIG.DRIVE_ROOT_FOLDER_ID, 'passcodes.json', content);
+                if (file && file.id) this.passcodesFileId = file.id;
+            }
+        } catch (e) {
+            console.error('Failed to save passcodes to Drive:', e);
+        }
     }
 
     // Get cached data or fetch fresh
