@@ -11,6 +11,11 @@ class App {
 
     // Initialize the app
     async init() {
+        // Sync passcodes from Google Drive automatically so all friends can log in
+        try {
+            await driveAPI.loadPasscodesFromDrive();
+        } catch (e) {}
+
         // Check login state
         if (isLoggedIn()) {
             this.showMainPage();
