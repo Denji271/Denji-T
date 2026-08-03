@@ -33,8 +33,20 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content (magnet.txt, leiras.txt)
+    // Read text file content (magnet.txt, leiras.txt, kategoria.txt)
     async readTextFile(fileId) {
+        // Try public UC view URL first (works for all shared drive files without 403 API key restrictions)
+        const ucUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+        try {
+            const res = await fetch(ucUrl);
+            if (res.ok) {
+                return await res.text();
+            }
+        } catch (e) {
+            console.warn('UC fetch failed, falling back to API endpoint:', e);
+        }
+
+        // Fallback to Drive API endpoint
         const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
         const res = await fetch(url);
         if (!res.ok) throw new Error(`Drive API error: ${res.status}`);
@@ -84,7 +96,18 @@ class DriveAPI {
                 torrent.torrentFileId = file.id;
                 torrent.torrentFileName = file.name;
             } 
-            // 3. Text files (.txt)
+            // 3. Category file (kategoria.txt)
+            else if (nameLower === 'kategoria.txt' || nameLower === 'category.txt') {
+                try {
+                    const catText = await this.readTextFile(file.id);
+                    if (catText && catText.trim()) {
+                        torrent.category = catText.trim();
+                    }
+                } catch (e) {
+                    console.error('Failed to read category file:', file.name, e);
+                }
+            }
+            // 4. Text files (.txt)
             else if (nameLower.endsWith('.txt')) {
                 try {
                     const text = await this.readTextFile(file.id);
@@ -254,24 +277,15 @@ class DriveAPI {
         return this.uploadFile(file, folderId, fileName);
     }
 
-    // Add a new torrent: creates folder + uploads files
+    // Add a new torrent: creates folder directly in root Drive folder + uploads files
     async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description }) {
-        // Get or create the category folder ID
-        let categoryFolderId = this.categoryFolderIds[category];
-        if (!categoryFolderId) {
-            const rootFolders = await this.listFolders(CONFIG.DRIVE_ROOT_FOLDER_ID);
-            const found = rootFolders.find(f => f.name === category);
-            if (found) {
-                categoryFolderId = found.id;
-            } else {
-                const newCat = await this.createFolder(category, CONFIG.DRIVE_ROOT_FOLDER_ID);
-                categoryFolderId = newCat.id;
-            }
-            this.categoryFolderIds[category] = categoryFolderId;
-        }
+        // Create the torrent folder directly inside the root Google Drive folder
+        const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
-        // Create the torrent folder
-        const folder = await this.createFolder(title, categoryFolderId);
+        // Upload kategoria.txt so the website knows the category (Játék / Film / Sorozat)
+        if (category) {
+            await this.uploadTextFile(category, folder.id, 'kategoria.txt');
+        }
 
         // Upload cover image
         if (coverFile) {
