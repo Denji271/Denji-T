@@ -25,25 +25,25 @@ class App {
         this.bindEvents();
     }
 
-    // Fetch passcodes.json from Google Drive root folder (uses API key, no auth needed)
+    // Fetch passcodes from Google Drive root folder (reads file description metadata — no 403!)
     async syncPasscodesFromDrive() {
         if (!CONFIG.GOOGLE_API_KEY || !CONFIG.DRIVE_ROOT_FOLDER_ID) return;
         try {
-            // Find passcodes.json in root folder
-            const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id)`;
-            const searchRes = await fetch(searchUrl);
+            // Find passcodes.json in root folder — description field contains the passcode JSON
+            const controller = new AbortController();
+            const tid = setTimeout(() => controller.abort(), 3000);
+            const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id,description)`;
+            const searchRes = await fetch(searchUrl, { signal: controller.signal });
+            clearTimeout(tid);
             if (!searchRes.ok) return;
             const searchData = await searchRes.json();
             const files = searchData.files || [];
             if (files.length === 0) return;
 
-            // Read file content
-            const fileUrl = `https://www.googleapis.com/drive/v3/files/${files[0].id}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
-            const fileRes = await fetch(fileUrl);
-            if (!fileRes.ok) return;
-            const text = await fileRes.text();
-            if (text && text.trim().startsWith('[')) {
-                const passcodes = JSON.parse(text.trim());
+            // Read passcodes from file description (metadata, not file content — works with API key!)
+            const desc = files[0].description;
+            if (desc && desc.trim().startsWith('[')) {
+                const passcodes = JSON.parse(desc.trim());
                 if (Array.isArray(passcodes) && passcodes.length > 0) {
                     localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
                 }
@@ -416,11 +416,14 @@ class App {
     }
 
     // Upload passcodes.json to Google Drive (admin only, uses OAuth)
+    // Stores passcode JSON in file description (readable by API key) AND file content
     async uploadPasscodesToDrive() {
         if (!isAdmin()) return;
         try {
             const passcodes = getPasscodes();
-            const content = JSON.stringify(passcodes, null, 2);
+            const content = JSON.stringify(passcodes);
+
+            const token = await driveAPI.getAccessToken();
 
             // Check if passcodes.json already exists
             const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id)`;
@@ -428,21 +431,21 @@ class App {
             const searchData = await searchRes.json();
             const existingFiles = searchData.files || [];
 
-            const token = await driveAPI.getAccessToken();
-
             if (existingFiles.length > 0) {
-                // Update existing file
-                await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingFiles[0].id}?uploadType=media`, {
+                // Update existing file content AND description
+                const fileId = existingFiles[0].id;
+                // Update description (metadata) — this is what friends read via API key
+                await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
                     method: 'PATCH',
                     headers: {
                         'Authorization': `Bearer ${token}`,
                         'Content-Type': 'application/json'
                     },
-                    body: content
+                    body: JSON.stringify({ description: content })
                 });
             } else {
-                // Create new file
-                await driveAPI.uploadTextFile(content, CONFIG.DRIVE_ROOT_FOLDER_ID, 'passcodes.json');
+                // Create new file with description
+                await driveAPI.uploadTextFile(content, CONFIG.DRIVE_ROOT_FOLDER_ID, 'passcodes.json', content);
             }
             this.showToast('Kódok szinkronizálva a Drive-ra!', 'success');
         } catch (e) {
