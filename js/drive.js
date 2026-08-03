@@ -33,24 +33,47 @@ class DriveAPI {
         return data.files || [];
     }
 
-    // Read text file content (magnet.txt, leiras.txt, kategoria.txt)
+    // Read text file content with strict 1.5s timeout to prevent hanging UI
     async readTextFile(fileId) {
-        // Try public UC view URL first (works for all shared drive files without 403 API key restrictions)
-        const ucUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+        if (!fileId) return '';
+        
+        // Method 1: Drive API with AbortController 1.5s timeout
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
+
         try {
-            const res = await fetch(ucUrl);
+            const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
+            const res = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
             if (res.ok) {
-                return await res.text();
+                const text = await res.text();
+                if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
+                    return text;
+                }
             }
         } catch (e) {
-            console.warn('UC fetch failed, falling back to API endpoint:', e);
+            clearTimeout(timeoutId);
         }
 
-        // Fallback to Drive API endpoint
-        const url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`;
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Drive API error: ${res.status}`);
-        return await res.text();
+        // Method 2: Public UC export=view fallback with AbortController 1.5s timeout
+        const controller2 = new AbortController();
+        const timeoutId2 = setTimeout(() => controller2.abort(), 1500);
+
+        try {
+            const ucUrl = `https://drive.google.com/uc?export=view&id=${fileId}`;
+            const res = await fetch(ucUrl, { signal: controller2.signal });
+            clearTimeout(timeoutId2);
+            if (res.ok) {
+                const text = await res.text();
+                if (text && !text.includes('<!DOCTYPE html>') && !text.includes('<html>')) {
+                    return text;
+                }
+            }
+        } catch (e) {
+            clearTimeout(timeoutId2);
+        }
+
+        return '';
     }
 
     // Get cover image URL
@@ -60,17 +83,28 @@ class DriveAPI {
 
     // Initialize: discover category folder IDs
     async init() {
-        const rootFolders = await this.listFolders(CONFIG.DRIVE_ROOT_FOLDER_ID);
-        for (const folder of rootFolders) {
-            if (CONFIG.CATEGORIES[folder.name]) {
-                this.categoryFolderIds[folder.name] = folder.id;
+        try {
+            const rootFolders = await this.listFolders(CONFIG.DRIVE_ROOT_FOLDER_ID);
+            for (const folder of rootFolders) {
+                if (CONFIG.CATEGORIES[folder.name]) {
+                    this.categoryFolderIds[folder.name] = folder.id;
+                }
             }
+        } catch (e) {
+            console.error('Init error:', e);
         }
     }
 
     // Process a single torrent folder and extract its cover image, magnet link, torrent file, and description
     async processTorrentFolder(folder, defaultCategory = 'Játék') {
-        const files = await this.listFiles(folder.id);
+        let files = [];
+        try {
+            files = await this.listFiles(folder.id);
+        } catch (e) {
+            console.error('Failed to list files for folder:', folder.name, e);
+            return null;
+        }
+
         const torrent = {
             id: folder.id,
             title: folder.name,
@@ -82,6 +116,8 @@ class DriveAPI {
             torrentFileName: null,
             description: null,
         };
+
+        const textPromises = [];
 
         for (const file of files) {
             const nameLower = file.name.toLowerCase();
@@ -98,30 +134,29 @@ class DriveAPI {
             } 
             // 3. Category file (kategoria.txt)
             else if (nameLower === 'kategoria.txt' || nameLower === 'category.txt') {
-                try {
-                    const catText = await this.readTextFile(file.id);
-                    if (catText && catText.trim()) {
-                        torrent.category = catText.trim();
-                    }
-                } catch (e) {
-                    console.error('Failed to read category file:', file.name, e);
-                }
+                textPromises.push(
+                    this.readTextFile(file.id).then(catText => {
+                        if (catText && catText.trim()) torrent.category = catText.trim();
+                    }).catch(() => {})
+                );
             }
             // 4. Text files (.txt)
             else if (nameLower.endsWith('.txt')) {
-                try {
-                    const text = await this.readTextFile(file.id);
-                    const trimmed = text ? text.trim() : '';
-                    if (trimmed.startsWith('magnet:?')) {
-                        torrent.magnetLink = trimmed;
-                    } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
-                        torrent.description = trimmed;
-                    }
-                } catch (e) {
-                    console.error('Failed to read text file:', file.name, e);
-                }
+                textPromises.push(
+                    this.readTextFile(file.id).then(text => {
+                        const trimmed = text ? text.trim() : '';
+                        if (trimmed.startsWith('magnet:?')) {
+                            torrent.magnetLink = trimmed;
+                        } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
+                            torrent.description = trimmed;
+                        }
+                    }).catch(() => {})
+                );
             }
         }
+
+        // Wait for all text reads in parallel (max 1.5 seconds)
+        await Promise.all(textPromises);
 
         return torrent;
     }
