@@ -1,5 +1,5 @@
 /**
- * Authentication module for Denji-T
+ * Authentication & Passcode Module for Denji-T
  */
 
 // SHA-256 hash using Web Crypto API
@@ -11,30 +11,106 @@ async function hashPassword(password) {
     return hashHex;
 }
 
-// Validates credentials against CONFIG and stores login state
-async function login(username, password) {
+// Get passcodes list (defaults + localStorage)
+function getPasscodes() {
+    const stored = localStorage.getItem('denjit_passcodes');
+    if (stored) {
+        try {
+            return JSON.parse(stored);
+        } catch (e) {
+            console.error('Failed to parse passcodes:', e);
+        }
+    }
+    // Default passcodes
+    return [
+        { id: '1', name: 'Barát', code: '7788', role: 'guest' }
+    ];
+}
+
+// Save passcodes list
+function savePasscodes(passcodes) {
+    localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
+}
+
+// Add or update a passcode
+function addPasscode(name, code, role = 'guest') {
+    const passcodes = getPasscodes();
+    const existingIndex = passcodes.findIndex(p => p.id === id || p.code === code.trim());
+    if (existingIndex >= 0) {
+        passcodes[existingIndex] = { id: passcodes[existingIndex].id, name, code: code.trim(), role };
+    } else {
+        passcodes.push({ id: Date.now().toString(), name, code: code.trim(), role });
+    }
+    savePasscodes(passcodes);
+    return passcodes;
+}
+
+// Delete a passcode
+function deletePasscode(id) {
+    let passcodes = getPasscodes();
+    passcodes = passcodes.filter(p => p.id !== id);
+    savePasscodes(passcodes);
+    return passcodes;
+}
+
+// Login with Admin Username + Password
+async function loginWithPassword(username, password) {
     if (username === CONFIG.ADMIN_USERNAME) {
         const hashedPassword = await hashPassword(password);
         if (hashedPassword === CONFIG.ADMIN_PASSWORD_HASH) {
-            sessionStorage.setItem('denjit_auth', 'true');
-            return true;
+            const user = { username: 'Denji', displayName: 'Denji (Admin)', role: 'admin' };
+            sessionStorage.setItem('denjit_user', JSON.stringify(user));
+            return { success: true, user };
         }
     }
-    return false;
+    return { success: false, error: 'Hibás felhasználónév vagy jelszó!' };
 }
 
-// Clears sessionStorage and reloads the page
-function logout() {
-    sessionStorage.removeItem('denjit_auth');
-    window.location.reload();
+// Login with Passcode
+function loginWithPasscode(code) {
+    const cleanCode = code.trim();
+    if (!cleanCode) return { success: false, error: 'Add meg a kódot!' };
+
+    const passcodes = getPasscodes();
+    const found = passcodes.find(p => p.code.trim() === cleanCode);
+    if (found) {
+        const user = { username: found.name, displayName: found.name, role: found.role || 'guest' };
+        sessionStorage.setItem('denjit_user', JSON.stringify(user));
+        return { success: true, user };
+    }
+    return { success: false, error: 'Érvénytelen belépési kód!' };
 }
 
-// Checks if the user is currently logged in
+// Legacy login wrapper for backward compatibility
+async function login(username, password) {
+    const res = await loginWithPassword(username, password);
+    return res.success;
+}
+
+// Get current logged in user
+function getCurrentUser() {
+    const data = sessionStorage.getItem('denjit_user');
+    if (!data) return null;
+    try {
+        return JSON.parse(data);
+    } catch (e) {
+        return null;
+    }
+}
+
+// Check if user is logged in
 function isLoggedIn() {
-    return sessionStorage.getItem('denjit_auth') === 'true';
+    return !!getCurrentUser();
 }
 
-// Checks if the user is an admin (same as logged in for this app)
+// Check if logged in user is admin
 function isAdmin() {
-    return isLoggedIn();
+    const user = getCurrentUser();
+    return user && user.role === 'admin';
+}
+
+// Logout
+function logout() {
+    sessionStorage.removeItem('denjit_user');
+    window.location.reload();
 }
