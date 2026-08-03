@@ -29,9 +29,19 @@ class App {
         document.getElementById('login-page').classList.remove('active');
         document.getElementById('main-page').classList.add('active');
         
-        // Show admin UI elements
+        const user = getCurrentUser();
+        const greetingEl = document.getElementById('user-greeting');
+        if (greetingEl && user) {
+            greetingEl.textContent = user.displayName || user.username;
+        }
+
+        // Show admin UI elements if user is admin
         if (isAdmin()) {
             document.body.classList.add('admin-mode');
+            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'inline-flex');
+        } else {
+            document.body.classList.remove('admin-mode');
+            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
         }
 
         // Check if API key is configured
@@ -44,7 +54,7 @@ class App {
         await this.loadTorrents();
 
         // Initialize OAuth if admin and client ID is set
-        if (isAdmin() && CONFIG.GOOGLE_CLIENT_ID) {
+        if (isAdmin() && (CONFIG.GOOGLE_CLIENT_ID || localStorage.getItem('denjit_client_id'))) {
             driveAPI.initOAuth();
         }
     }
@@ -158,7 +168,41 @@ class App {
 
     // Event bindings
     bindEvents() {
-        // Login form
+        // Login mode tabs (Passcode vs Admin)
+        document.querySelectorAll('.login-mode-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.login-mode-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.login-form-view').forEach(f => f.classList.remove('active'));
+                btn.classList.add('active');
+                const mode = btn.dataset.mode;
+                if (mode === 'passcode') {
+                    document.getElementById('passcode-login-form')?.classList.add('active');
+                } else {
+                    document.getElementById('login-form')?.classList.add('active');
+                }
+            });
+        });
+
+        // Passcode login form
+        const passcodeForm = document.getElementById('passcode-login-form');
+        if (passcodeForm) {
+            passcodeForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const code = document.getElementById('passcode-input').value;
+                const errorEl = document.getElementById('passcode-error');
+                const res = loginWithPasscode(code);
+                if (res.success) {
+                    errorEl.textContent = '';
+                    this.showMainPage();
+                } else {
+                    errorEl.textContent = res.error;
+                    errorEl.classList.add('shake');
+                    setTimeout(() => errorEl.classList.remove('shake'), 600);
+                }
+            });
+        }
+
+        // Admin login form
         const loginForm = document.getElementById('login-form');
         if (loginForm) {
             loginForm.addEventListener('submit', async (e) => {
@@ -167,12 +211,12 @@ class App {
                 const password = document.getElementById('password-input').value;
                 const errorEl = document.getElementById('login-error');
                 
-                const success = await login(username, password);
-                if (success) {
+                const res = await loginWithPassword(username, password);
+                if (res.success) {
                     errorEl.textContent = '';
                     this.showMainPage();
                 } else {
-                    errorEl.textContent = 'Hibás felhasználónév vagy jelszó!';
+                    errorEl.textContent = res.error;
                     errorEl.classList.add('shake');
                     setTimeout(() => errorEl.classList.remove('shake'), 600);
                 }
@@ -215,6 +259,25 @@ class App {
         // Open Drive button (simplified option)
         document.getElementById('open-drive-btn')?.addEventListener('click', () => {
             window.open(`https://drive.google.com/drive/folders/${CONFIG.DRIVE_ROOT_FOLDER_ID}`, '_blank');
+        });
+
+        // Manage passcodes button (admin)
+        document.getElementById('manage-passcodes-btn')?.addEventListener('click', () => {
+            this.renderPasscodeList();
+            document.getElementById('passcode-modal').classList.add('active');
+        });
+
+        // Add passcode form submission
+        document.getElementById('add-passcode-form')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const name = document.getElementById('new-friend-name').value.trim();
+            const code = document.getElementById('new-friend-code').value.trim();
+            if (name && code) {
+                addPasscode(name, code);
+                this.showToast(`Kód elmentve: ${name} (${code})`, 'success');
+                document.getElementById('add-passcode-form').reset();
+                this.renderPasscodeList();
+            }
         });
 
         // Close modals
@@ -288,6 +351,31 @@ class App {
             await this.loadTorrents();
             this.showToast('Adatok frissítve!');
         });
+    }
+
+    renderPasscodeList() {
+        const listEl = document.getElementById('passcode-list');
+        if (!listEl) return;
+        const passcodes = getPasscodes();
+        if (passcodes.length === 0) {
+            listEl.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">Még nincs mentett kód.</p>';
+            return;
+        }
+        listEl.innerHTML = passcodes.map(p => `
+            <div class="passcode-item" style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.05); padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; border: 1px solid rgba(255,255,255,0.08);">
+                <div>
+                    <strong style="color: var(--text-primary); font-size: 14px;">${this.escapeHtml(p.name)}</strong>
+                    <span style="display: inline-block; margin-left: 8px; background: rgba(0,240,255,0.15); color: var(--accent-cyan); padding: 2px 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600;">${this.escapeHtml(p.code)}</span>
+                </div>
+                <button type="button" onclick="app.handleDeletePasscode('${p.id}')" class="btn-icon" style="color: #ef4444; width: 32px; height: 32px;" title="Kód törlése">🗑️</button>
+            </div>
+        `).join('');
+    }
+
+    handleDeletePasscode(id) {
+        deletePasscode(id);
+        this.showToast('Kód törölve!', 'info');
+        this.renderPasscodeList();
     }
 
     // Open magnet link
