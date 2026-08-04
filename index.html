@@ -174,12 +174,13 @@
     <div id="add-modal" class="modal-overlay">
         <div class="modal-content">
             <div class="modal-header">
-                <h2 class="modal-title">Új Torrent Hozzáadása</h2>
+                <h2 class="modal-title" id="add-modal-title">Új Torrent Hozzáadása</h2>
                 <button class="modal-close btn-icon" title="Bezárás">
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
             </div>
             <form id="add-form">
+                <input type="hidden" id="edit-torrent-id" value="">
                 <div class="modal-body">
                     <!-- Quick Drive Notice Banner -->
                     <div style="background: rgba(129, 140, 248, 0.08); border: 1px solid rgba(129, 140, 248, 0.2); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
@@ -228,10 +229,20 @@
                         </div>
                     </div>
 
-                    <!-- Streamtape Link -->
-                    <div class="form-group">
+                    <!-- Film: single Streamtape link -->
+                    <div class="form-group" id="film-stream-group">
                         <label for="add-stream" class="form-label">🎬 Streamtape Link (Online nézéshez)</label>
-                        <input type="text" id="add-stream" class="form-input" placeholder="pl. https://streamtape.com/v/abc123xyz">
+                        <input type="text" id="add-stream" class="form-input" placeholder="pl. https://streamtape.com/v/G639mdPx77t1Jyy/...">
+                    </div>
+
+                    <!-- Sorozat: seasons + episodes -->
+                    <div class="form-group" id="series-stream-group" style="display: none;">
+                        <label class="form-label">📺 Évadok és részek (Streamtape linkek)</label>
+                        <div id="seasons-editor" class="seasons-editor"></div>
+                        <button type="button" id="add-season-btn" class="btn-add-episode-main">
+                            + Új évad
+                        </button>
+                        <p class="form-hint">Évadonként add meg a részek Streamtape linkjeit. A sorrend számít.</p>
                     </div>
 
                     <!-- Direct Download Link -->
@@ -246,6 +257,15 @@
                         <textarea id="add-trailers" class="form-input form-textarea" rows="3" placeholder="Soronként egy YouTube link, pl.:\nhttps://www.youtube.com/watch?v=abc123\nhttps://youtu.be/xyz456"></textarea>
                     </div>
 
+                    <!-- Subtitle files -->
+                    <div class="form-group">
+                        <label for="subtitle-input" class="form-label">💬 Felirat fájlok (.srt / .vtt)</label>
+                        <div class="file-input-wrapper">
+                            <input type="file" id="subtitle-input" accept=".srt,.vtt,.ass,.ssa" class="form-file-input" multiple>
+                        </div>
+                        <p class="form-hint">A Streamtape beépített feliratai automatikusan megjelennek. Drive-ra feltöltött .srt fájlok letölthetők a lejátszónál.</p>
+                    </div>
+
                     <!-- Description -->
                     <div class="form-group">
                         <label for="add-description" class="form-label">Leírás</label>
@@ -253,9 +273,9 @@
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="submit" class="btn btn-submit">
+                    <button type="submit" class="btn btn-submit" id="add-submit-btn">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                        Torrent Feltöltése
+                        <span id="add-submit-text">Torrent Feltöltése</span>
                     </button>
                 </div>
             </form>
@@ -331,6 +351,7 @@
 
                 <div id="cinema-player-wrapper" class="cinema-player-box">
                     <iframe id="cinema-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+                    <video id="cinema-player-video" controls playsinline preload="metadata" style="display:none;"></video>
                     <div id="cinema-player-placeholder" class="cinema-placeholder">
                         <div class="stage-cover-bg"></div>
                     </div>
@@ -343,6 +364,22 @@
 
             <!-- 2. Media Selector Buttons (trailer 1, trailer 2, stream) -->
             <div id="cinema-server-tabs" class="cinema-server-tabs"></div>
+
+            <!-- Series season + episode selector (horizontal) -->
+            <div id="series-episode-selector" class="series-episode-selector" style="display: none;">
+                <div class="series-season-tabs" id="series-season-tabs"></div>
+                <div class="series-ep-scroll-wrap">
+                    <button type="button" class="series-ep-arrow series-ep-prev" id="series-ep-prev" title="Balra">‹</button>
+                    <div class="series-episode-list" id="series-episode-list"></div>
+                    <button type="button" class="series-ep-arrow series-ep-next" id="series-ep-next" title="Jobbra">›</button>
+                </div>
+            </div>
+
+            <!-- Subtitle track selector (native player) -->
+            <div id="subtitle-track-selector" class="subtitle-track-selector" style="display: none;">
+                <span class="subtitle-track-label">💬 Felirat:</span>
+                <div id="subtitle-track-list" class="subtitle-track-list"></div>
+            </div>
 
             <!-- 3. Content Section: Title, Meta & Description -->
             <div class="cinema-info-box">

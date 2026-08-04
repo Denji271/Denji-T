@@ -148,6 +148,9 @@ class DriveAPI {
             streamUrl: null,
             downloadUrl: null,
             trailers: [],
+            episodes: null, // legacy flat: [{ ep: 1, url: '...' }]
+            seasons: null,  // [{ season: 1, episodes: [{ ep: 1, url }] }]
+            subtitles: [],  // [{ id, name, lang }]
         };
 
         for (const file of files) {
@@ -162,6 +165,17 @@ class DriveAPI {
             else if (nameLower.endsWith('.torrent') || mime === 'application/x-bittorrent') {
                 torrent.torrentFileId = file.id;
                 torrent.torrentFileName = file.name;
+            }
+            // 2b. Subtitle files (.srt, .vtt, .ass)
+            else if (/\.(srt|vtt|ass|ssa)$/i.test(file.name)) {
+                let lang = '';
+                const m = file.name.match(/[.\-_](hu|hun|hungarian|en|eng|english|de|ger|german|ro|rom|romanian|es|spa|spanish|fr|fre|french|it|ita|italian|ru|rus|russian|pl|pol|polish|sk|slo|slovak|cz|cze|czech)[.\-_]/i);
+                if (m) {
+                    const code = m[1].toLowerCase();
+                    const map = { hu: 'HU', hun: 'HU', hungarian: 'HU', en: 'EN', eng: 'EN', english: 'EN', de: 'DE', ger: 'DE', german: 'DE', ro: 'RO', rom: 'RO', romanian: 'RO', es: 'ES', spa: 'ES', spanish: 'ES', fr: 'FR', fre: 'FR', french: 'FR', it: 'IT', ita: 'IT', italian: 'IT', ru: 'RU', rus: 'RU', russian: 'RU', pl: 'PL', pol: 'PL', polish: 'PL', sk: 'SK', slo: 'SK', slovak: 'SK', cz: 'CZ', cze: 'CZ', czech: 'CZ' };
+                    lang = map[code] || code.toUpperCase();
+                }
+                torrent.subtitles.push({ id: file.id, name: file.name, lang: lang || 'SUB' });
             } 
             // 3. Category file (kategoria.txt)
             else if (nameLower === 'kategoria.txt' || nameLower === 'category.txt') {
@@ -172,20 +186,68 @@ class DriveAPI {
                     if (catText && catText.trim()) torrent.category = catText.trim();
                 }).catch(() => {});
             }
-            // 4. Stream file (stream.txt)
+            // 4. Stream file (stream.txt) — film single URL or series JSON
             else if (nameLower === 'stream.txt' || nameLower === 'streamtape.txt') {
-                if (file.description && file.description.trim()) {
-                    let sUrl = file.description.trim();
-                    if (sUrl.includes('streamtape.com/v/')) sUrl = sUrl.replace('streamtape.com/v/', 'streamtape.com/e/');
-                    torrent.streamUrl = sUrl;
-                }
-                this.readTextFile(file.id).then(t => {
-                    if (t && t.trim()) {
-                        let sUrl = t.trim();
+                const applyStreamData = (raw) => {
+                    if (!raw || !raw.trim()) return;
+                    const text = raw.trim();
+                    if (text.startsWith('{') || text.startsWith('[')) {
+                        try {
+                            const parsed = JSON.parse(text);
+                            if (parsed.seasons && Array.isArray(parsed.seasons)) {
+                                torrent.seasons = parsed.seasons.map((s, si) => ({
+                                    season: s.season || (si + 1),
+                                    episodes: (s.episodes || []).map((e, i) => ({
+                                        ep: e.ep || (i + 1),
+                                        url: (e.url || '').replace('streamtape.com/v/', 'streamtape.com/e/')
+                                    })).filter(e => e.url)
+                                })).filter(s => s.episodes.length);
+                            } else {
+                                const eps = parsed.episodes || (Array.isArray(parsed) ? parsed : null);
+                                if (eps && eps.length) {
+                                    torrent.episodes = eps.map((e, i) => ({
+                                        ep: e.ep || (i + 1),
+                                        url: (e.url || '').replace('streamtape.com/v/', 'streamtape.com/e/')
+                                    })).filter(e => e.url);
+                                }
+                            }
+                        } catch (e) {}
+                    } else {
+                        let sUrl = text;
                         if (sUrl.includes('streamtape.com/v/')) sUrl = sUrl.replace('streamtape.com/v/', 'streamtape.com/e/');
                         torrent.streamUrl = sUrl;
                     }
-                }).catch(() => {});
+                };
+                if (file.description) applyStreamData(file.description);
+                this.readTextFile(file.id).then(applyStreamData).catch(() => {});
+            }
+            // 4b. episodes.json for series (supports seasons or flat episodes)
+            else if (nameLower === 'episodes.json' || nameLower === 'episodes.txt') {
+                const applyEps = (raw) => {
+                    if (!raw || !raw.trim()) return;
+                    try {
+                        const parsed = JSON.parse(raw.trim());
+                        if (parsed.seasons && Array.isArray(parsed.seasons)) {
+                            torrent.seasons = parsed.seasons.map((s, si) => ({
+                                season: s.season || (si + 1),
+                                episodes: (s.episodes || []).map((e, i) => ({
+                                    ep: e.ep || (i + 1),
+                                    url: (e.url || '').replace('streamtape.com/v/', 'streamtape.com/e/')
+                                })).filter(e => e.url)
+                            })).filter(s => s.episodes.length);
+                        } else {
+                            const eps = parsed.episodes || (Array.isArray(parsed) ? parsed : null);
+                            if (eps && eps.length) {
+                                torrent.episodes = eps.map((e, i) => ({
+                                    ep: e.ep || (i + 1),
+                                    url: (e.url || '').replace('streamtape.com/v/', 'streamtape.com/e/')
+                                })).filter(e => e.url);
+                            }
+                        }
+                    } catch (e) {}
+                };
+                if (file.description) applyEps(file.description);
+                this.readTextFile(file.id).then(applyEps).catch(() => {});
             }
             // 5. Download link file (download.txt, letoltes.txt)
             else if (nameLower === 'download.txt' || nameLower === 'letoltes.txt') {
@@ -437,7 +499,8 @@ class DriveAPI {
             parents: [folderId]
         };
         if (fileDescription) {
-            metadata.description = fileDescription;
+            // Drive description soft limit ~100KB; keep safe
+            metadata.description = String(fileDescription).slice(0, 90000);
         }
 
         const formData = new FormData();
@@ -451,7 +514,12 @@ class DriveAPI {
             },
             body: formData
         });
-        if (!res.ok) throw new Error(`Failed to upload file: ${res.status}`);
+        if (!res.ok) {
+            let detail = '';
+            try { detail = await res.text(); } catch (e) {}
+            console.error('Drive upload error:', res.status, detail);
+            throw new Error(`Failed to upload file: ${res.status}${detail ? ' — ' + detail.slice(0, 200) : ''}`);
+        }
         return await res.json();
     }
 
@@ -463,11 +531,11 @@ class DriveAPI {
     }
 
     // Add a new torrent: creates folder directly in root Drive folder + uploads files
-    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers }) {
+    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, subtitleFiles }) {
         // Create the torrent folder directly inside the root Google Drive folder
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
-        // Upload kategoria.txt (description = category name for GitHub Pages metadata access)
+        // Upload kategoria.txt
         if (category) {
             await this.uploadTextFile(category, folder.id, 'kategoria.txt', category);
         }
@@ -478,13 +546,34 @@ class DriveAPI {
             await this.uploadFile(coverFile, folder.id, `cover.${ext}`);
         }
 
-        // Upload magnet.txt (description = magnet URI for GitHub Pages metadata access)
+        // Upload magnet.txt
         if (magnetLink) {
             await this.uploadTextFile(magnetLink.trim(), folder.id, 'magnet.txt', magnetLink.trim());
         }
 
-        // Upload stream.txt (Streamtape embed link)
-        if (streamUrl) {
+        // Series seasons OR legacy flat episodes OR single film stream
+        if (seasons && seasons.length > 0) {
+            const cleaned = seasons.map((s, si) => ({
+                season: s.season || (si + 1),
+                episodes: (s.episodes || []).map((e, i) => ({
+                    ep: e.ep || (i + 1),
+                    url: (e.url || '').trim().replace('streamtape.com/v/', 'streamtape.com/e/')
+                })).filter(e => e.url)
+            })).filter(s => s.episodes.length);
+            if (cleaned.length) {
+                const json = JSON.stringify({ seasons: cleaned });
+                await this.uploadTextFile(json, folder.id, 'episodes.json', json);
+            }
+        } else if (episodes && episodes.length > 0) {
+            const cleaned = episodes.map((e, i) => ({
+                ep: e.ep || (i + 1),
+                url: (e.url || '').trim().replace('streamtape.com/v/', 'streamtape.com/e/')
+            })).filter(e => e.url);
+            if (cleaned.length) {
+                const json = JSON.stringify({ seasons: [{ season: 1, episodes: cleaned }] });
+                await this.uploadTextFile(json, folder.id, 'episodes.json', json);
+            }
+        } else if (streamUrl) {
             let cleanStream = streamUrl.trim();
             if (cleanStream.includes('streamtape.com/v/')) {
                 cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
@@ -492,12 +581,12 @@ class DriveAPI {
             await this.uploadTextFile(cleanStream, folder.id, 'stream.txt', cleanStream);
         }
 
-        // Upload download.txt (direct download link)
+        // Upload download.txt
         if (downloadUrl) {
             await this.uploadTextFile(downloadUrl.trim(), folder.id, 'download.txt', downloadUrl.trim());
         }
 
-        // Upload trailers.txt (YouTube trailer links, one per line)
+        // Upload trailers.txt
         if (trailers && trailers.length > 0) {
             const trailersContent = trailers.join('\n');
             await this.uploadTextFile(trailersContent, folder.id, 'trailers.txt', trailersContent);
@@ -508,15 +597,149 @@ class DriveAPI {
             await this.uploadFile(torrentFile, folder.id, torrentFile.name);
         }
 
-        // Upload leiras.txt (description = text content for GitHub Pages metadata access)
+        // Upload subtitle files (.srt / .vtt / .ass) — no description (large SRT caused 400)
+        if (subtitleFiles && subtitleFiles.length) {
+            for (const sf of subtitleFiles) {
+                if (!sf) continue;
+                const safeName = sf.name.replace(/[^\w.\-()\[\]\s\u00C0-\u024F]/g, '_');
+                await this.uploadFile(sf, folder.id, safeName);
+            }
+        }
+
+        // Upload leiras.txt
         if (description) {
             await this.uploadTextFile(description, folder.id, 'leiras.txt', description);
         }
 
-        // Clear cache to refresh
         this.clearCache();
-
         return folder;
+    }
+
+    // Update existing text file by name inside a folder (or create if missing)
+    async upsertTextFile(folderId, fileName, content) {
+        const token = await this.getAccessToken();
+        const files = await this.listFiles(folderId);
+        const existing = files.find(f => f.name.toLowerCase() === fileName.toLowerCase());
+
+        if (existing) {
+            // Update description (metadata)
+            await fetch(`https://www.googleapis.com/drive/v3/files/${existing.id}`, {
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ description: content })
+            });
+            // Update content
+            await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existing.id}?uploadType=media`, {
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'text/plain'
+                },
+                body: content
+            });
+            return existing;
+        } else {
+            return this.uploadTextFile(content, folderId, fileName, content);
+        }
+    }
+
+    // Update an existing torrent (edit)
+    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, subtitleFiles }) {
+        const token = await this.getAccessToken();
+
+        // Rename folder if title changed
+        if (title) {
+            await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}`, {
+                method: 'PATCH',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ name: title })
+            });
+        }
+
+        if (category) {
+            await this.upsertTextFile(folderId, 'kategoria.txt', category);
+        }
+
+        if (coverFile) {
+            const files = await this.listFiles(folderId);
+            const oldCover = files.find(f => (f.mimeType || '').startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(f.name));
+            if (oldCover) {
+                await fetch(`https://www.googleapis.com/drive/v3/files/${oldCover.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+            }
+            const ext = coverFile.name.split('.').pop();
+            await this.uploadFile(coverFile, folderId, `cover.${ext}`);
+        }
+
+        if (magnetLink !== undefined && magnetLink !== null) {
+            if (magnetLink.trim()) {
+                await this.upsertTextFile(folderId, 'magnet.txt', magnetLink.trim());
+            }
+        }
+
+        // Seasons / episodes (series) or single stream (film)
+        if (seasons && seasons.length > 0) {
+            const cleaned = seasons.map((s, si) => ({
+                season: s.season || (si + 1),
+                episodes: (s.episodes || []).map((e, i) => ({
+                    ep: e.ep || (i + 1),
+                    url: (e.url || '').trim().replace('streamtape.com/v/', 'streamtape.com/e/')
+                })).filter(e => e.url)
+            })).filter(s => s.episodes.length);
+            const json = JSON.stringify({ seasons: cleaned });
+            await this.upsertTextFile(folderId, 'episodes.json', json);
+        } else if (episodes && episodes.length > 0) {
+            const cleaned = episodes.map((e, i) => ({
+                ep: e.ep || (i + 1),
+                url: (e.url || '').trim().replace('streamtape.com/v/', 'streamtape.com/e/')
+            })).filter(e => e.url);
+            const json = JSON.stringify({ seasons: [{ season: 1, episodes: cleaned }] });
+            await this.upsertTextFile(folderId, 'episodes.json', json);
+        } else if (streamUrl !== undefined && streamUrl !== null) {
+            if (streamUrl.trim()) {
+                let clean = streamUrl.trim().replace('streamtape.com/v/', 'streamtape.com/e/');
+                await this.upsertTextFile(folderId, 'stream.txt', clean);
+            }
+        }
+
+        if (downloadUrl !== undefined && downloadUrl !== null) {
+            if (downloadUrl.trim()) {
+                await this.upsertTextFile(folderId, 'download.txt', downloadUrl.trim());
+            }
+        }
+
+        if (trailers && trailers.length > 0) {
+            await this.upsertTextFile(folderId, 'trailers.txt', trailers.join('\n'));
+        }
+
+        if (torrentFile) {
+            await this.uploadFile(torrentFile, folderId, torrentFile.name);
+        }
+
+        if (subtitleFiles && subtitleFiles.length) {
+            for (const sf of subtitleFiles) {
+                if (!sf) continue;
+                const safeName = sf.name.replace(/[^\w.\-()\[\]\s\u00C0-\u024F]/g, '_');
+                await this.uploadFile(sf, folderId, safeName);
+            }
+        }
+
+        if (description !== undefined && description !== null) {
+            if (description.trim()) {
+                await this.upsertTextFile(folderId, 'leiras.txt', description);
+            }
+        }
+
+        this.clearCache();
+        return { id: folderId };
     }
 
     // Delete a torrent folder (and all contents)

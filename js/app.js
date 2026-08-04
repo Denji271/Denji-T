@@ -180,7 +180,10 @@ class App {
                     <div class="ll-frame-chrome">
                         <span class="chrome-dots"><i></i><i></i><i></i></span>
                         <span class="chrome-title">${torrent.category.toUpperCase()} // ${dateStr || 'DENJI-T'}</span>
-                        ${isAdmin() ? `<button class="card-delete-btn" onclick="event.stopPropagation(); app.confirmDelete('${torrent.id}', '${this.escapeHtml(torrent.title)}')" title="Törlés">🗑️</button>` : ''}
+                        ${isAdmin() ? `
+                            <button class="card-edit-btn" onclick="event.stopPropagation(); app.openEditModal('${torrent.id}')" title="Szerkesztés">✏️</button>
+                            <button class="card-delete-btn" onclick="event.stopPropagation(); app.confirmDelete('${torrent.id}', '${this.escapeHtml(torrent.title)}')" title="Törlés">🗑️</button>
+                        ` : ''}
                     </div>
                     <div class="card-cover">
                         ${torrent.coverUrl ? `<img src="${torrent.coverUrl}" referrerpolicy="no-referrer" class="card-cover-img" alt="${this.escapeHtml(torrent.title)}">` : `<div class="card-cover-placeholder">${categoryInfo.emoji}</div>`}
@@ -188,7 +191,7 @@ class App {
                     <div class="card-body">
                         <h3 class="card-title" title="${this.escapeHtml(torrent.title)}">${torrent.title}</h3>
                         <div class="card-actions">
-                            ${torrent.streamUrl ? `<button class="btn btn-stream" onclick="event.stopPropagation(); app.openStreamModal('${torrent.id}')">▶ Lejátszás</button>` : ''}
+                            ${(torrent.streamUrl || (torrent.episodes && torrent.episodes.length) || (torrent.seasons && torrent.seasons.length)) ? `<button class="btn btn-stream" onclick="event.stopPropagation(); app.showDetailModal('${torrent.id}')">▶ Lejátszás</button>` : ''}
                             ${torrent.downloadUrl ? `<button class="btn btn-download" onclick="event.stopPropagation(); window.open('${torrent.downloadUrl}', '_blank')">↓ Letöltés</button>` : ''}
                             ${(torrent.magnetLink || torrent.magnetFileId) ? `<button class="btn btn-magnet" onclick="event.stopPropagation(); app.openMagnet('${torrent.id}')">🧲 Magnet</button>` : ''}
                             ${torrent.torrentFileId ? `<button class="btn btn-torrent" onclick="event.stopPropagation(); app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent</button>` : ''}
@@ -286,7 +289,19 @@ class App {
 
         // Add button
         document.getElementById('add-torrent-fab')?.addEventListener('click', () => {
+            this.resetAddForm();
             document.getElementById('add-modal').classList.add('active');
+            this.updateStreamFormByCategory();
+        });
+
+        // Category change → film vs series stream UI
+        document.getElementById('add-category')?.addEventListener('change', () => {
+            this.updateStreamFormByCategory();
+        });
+
+        // Add season button
+        document.getElementById('add-season-btn')?.addEventListener('click', () => {
+            this.addSeasonBlock();
         });
 
         // Open Drive button (simplified option)
@@ -317,8 +332,7 @@ class App {
 
         const closeAllModals = () => {
             document.querySelectorAll('.modal-overlay').forEach(modal => modal.classList.remove('active'));
-            const cinemaIframe = document.getElementById('cinema-player-iframe');
-            if (cinemaIframe) cinemaIframe.src = '';
+            this.clearCinemaPlayers();
             const streamIframe = document.getElementById('stream-player-iframe');
             if (streamIframe) streamIframe.src = '';
         };
@@ -357,7 +371,7 @@ class App {
         // Torrent card click → detail modal
         document.getElementById('torrent-grid')?.addEventListener('click', (e) => {
             const card = e.target.closest('.torrent-card');
-            if (card && !e.target.closest('.btn') && !e.target.closest('.card-delete-btn')) {
+            if (card && !e.target.closest('.btn') && !e.target.closest('.card-delete-btn') && !e.target.closest('.card-edit-btn')) {
                 const torrentId = card.dataset.id;
                 this.showDetailModal(torrentId);
             }
@@ -525,6 +539,296 @@ class App {
         document.body.removeChild(a);
     }
 
+    // Download subtitle file (.srt / .vtt) from Google Drive
+    downloadSubtitle(fileId, fileName) {
+        const url = `https://drive.google.com/uc?id=${fileId}&export=download`;
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName || 'subtitle.srt';
+        a.target = '_blank';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        this.showToast('Felirat letöltése indul...', 'info');
+    }
+
+    // True if URL can be played in HTML5 <video> (direct file, not Streamtape/YouTube embed)
+    isDirectVideoUrl(url) {
+        if (!url || typeof url !== 'string') return false;
+        const u = url.toLowerCase();
+        if (u.includes('streamtape.com') || u.includes('youtube.com') || u.includes('youtu.be') || u.includes('vimeo.com')) {
+            return false;
+        }
+        if (/\.(mp4|webm|ogg|ogv|m3u8|mkv|mov)(\?|$)/i.test(u)) return true;
+        // Common direct host patterns
+        if (u.includes('buzzheavier.com') || u.includes('pixeldrain.com') || u.includes('/uc?') || u.includes('googleusercontent.com')) {
+            return true;
+        }
+        return false;
+    }
+
+    clearCinemaPlayers() {
+        const iframe = document.getElementById('cinema-player-iframe');
+        const videoEl = document.getElementById('cinema-player-video');
+        if (iframe) {
+            iframe.src = '';
+            iframe.style.display = 'none';
+        }
+        if (videoEl) {
+            videoEl.pause();
+            videoEl.removeAttribute('src');
+            videoEl.querySelectorAll('track').forEach(t => t.remove());
+            videoEl.load();
+            videoEl.style.display = 'none';
+        }
+    }
+
+    // Convert SRT text to WebVTT (for <track>)
+    srtToVtt(srt) {
+        if (!srt) return '';
+        let text = srt.replace(/\r+/g, '').trim();
+        if (text.startsWith('WEBVTT')) return text;
+        // SRT time , → VTT time .
+        text = text.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+        return 'WEBVTT\n\n' + text;
+    }
+
+    async fetchSubtitleText(fileId) {
+        // 1) localhost dedicated subtitle proxy
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+            try {
+                const res = await fetch(`/api/subtitle?id=${fileId}`);
+                if (res.ok) {
+                    const t = await res.text();
+                    if (t && t.trim().length > 10 && !t.includes('<!DOCTYPE')) return t.trim();
+                }
+            } catch (e) {}
+        }
+        // 2) description metadata via API key
+        try {
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=description&key=${CONFIG.GOOGLE_API_KEY}`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.description && data.description.trim().length > 10) {
+                    return data.description.trim();
+                }
+            }
+        } catch (e) {}
+        // 3) public download link
+        try {
+            const res = await fetch(`https://drive.google.com/uc?export=download&id=${fileId}`);
+            if (res.ok) {
+                const t = await res.text();
+                if (t && t.trim().length > 10 && !t.includes('<!DOCTYPE')) return t.trim();
+            }
+        } catch (e) {}
+        // 4) OAuth / readTextFile
+        try {
+            const t = await driveAPI.readTextFile(fileId);
+            if (t && t.trim().length > 10) return t.trim();
+        } catch (e) {}
+        return '';
+    }
+
+    async resolveStreamUrl(url) {
+        if (!url) return null;
+        if (this.isDirectVideoUrl(url)) return url;
+        if (!url.includes('streamtape.com')) return null;
+        if (location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') return null;
+        try {
+            const res = await fetch(`/api/resolve_stream?url=${encodeURIComponent(url)}`);
+            if (!res.ok) return null;
+            const data = await res.json();
+            return data.url || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    setActiveSubtitleTrack(index) {
+        const videoEl = document.getElementById('cinema-player-video');
+        if (!videoEl || !videoEl.textTracks) return;
+        for (let i = 0; i < videoEl.textTracks.length; i++) {
+            videoEl.textTracks[i].mode = (index === i) ? 'showing' : 'hidden';
+        }
+        if (index < 0) {
+            for (let i = 0; i < videoEl.textTracks.length; i++) {
+                videoEl.textTracks[i].mode = 'hidden';
+            }
+        }
+        const list = document.getElementById('subtitle-track-list');
+        if (list) {
+            list.querySelectorAll('.subtitle-track-btn').forEach((btn) => {
+                const idx = parseInt(btn.dataset.idx, 10);
+                btn.classList.toggle('active', idx === index);
+            });
+        }
+    }
+
+    renderSubtitleSelector(subtitles, activeIndex = 0) {
+        const wrap = document.getElementById('subtitle-track-selector');
+        const list = document.getElementById('subtitle-track-list');
+        if (!wrap || !list) return;
+        if (!subtitles || !subtitles.length) {
+            wrap.style.display = 'none';
+            list.innerHTML = '';
+            return;
+        }
+        wrap.style.display = 'flex';
+        const videoEl = document.getElementById('cinema-player-video');
+        const nativeMode = videoEl && videoEl.style.display !== 'none' && videoEl.src;
+
+        if (nativeMode) {
+            // Switchable tracks on native player
+            const buttons = [
+                `<button type="button" class="subtitle-track-btn ${activeIndex < 0 ? 'active' : ''}" data-idx="-1">Ki</button>`
+            ];
+            subtitles.forEach((sub, i) => {
+                const label = sub.lang && sub.lang !== 'SUB' ? sub.lang : (sub.name || `Felirat ${i + 1}`);
+                buttons.push(`<button type="button" class="subtitle-track-btn ${i === activeIndex ? 'active' : ''}" data-idx="${i}">${this.escapeHtml(label)}</button>`);
+            });
+            list.innerHTML = buttons.join('');
+            list.querySelectorAll('.subtitle-track-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const idx = parseInt(btn.dataset.idx, 10);
+                    this.setActiveSubtitleTrack(idx);
+                });
+            });
+        } else {
+            // Streamtape embed: download SRT files
+            list.innerHTML = subtitles.map((sub, i) => {
+                const label = sub.lang && sub.lang !== 'SUB' ? `Letöltés (${sub.lang})` : `Letöltés: ${this.escapeHtml(sub.name || 'felirat')}`;
+                return `<button type="button" class="subtitle-track-btn" data-sub-id="${sub.id}" data-sub-name="${this.escapeHtml(sub.name || 'subtitle.srt')}">💬 ${label}</button>`;
+            }).join('');
+            list.querySelectorAll('.subtitle-track-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.downloadSubtitle(btn.dataset.subId, btn.dataset.subName);
+                });
+            });
+        }
+    }
+
+    playStreamtapeEmbed(url, subtitles = []) {
+        const iframe = document.getElementById('cinema-player-iframe');
+        const videoEl = document.getElementById('cinema-player-video');
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (videoEl) {
+            videoEl.pause();
+            videoEl.removeAttribute('src');
+            videoEl.querySelectorAll('track').forEach(t => t.remove());
+            videoEl.load();
+            videoEl.style.display = 'none';
+        }
+        if (iframe) {
+            let embed = url || '';
+            if (embed.includes('streamtape.com/v/')) embed = embed.replace('streamtape.com/v/', 'streamtape.com/e/');
+            iframe.src = embed;
+            iframe.style.display = 'block';
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        // External SRT cannot overlay Streamtape iframe — show selector for download only
+        this.renderSubtitleSelector(subtitles, -1);
+    }
+
+    async playNativeVideo(url, subtitles = []) {
+        const iframe = document.getElementById('cinema-player-iframe');
+        const videoEl = document.getElementById('cinema-player-video');
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (!videoEl) return;
+
+        // YouTube → iframe only
+        if (url && (url.includes('youtube.com') || url.includes('youtu.be'))) {
+            this.playStreamtapeEmbed(url, []);
+            return;
+        }
+
+        let playUrl = url;
+
+        // Streamtape → resolve + local proxy so <video> + SRT works
+        if (url && url.includes('streamtape.com')) {
+            const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+            if (!isLocal) {
+                this.playStreamtapeEmbed(url, subtitles);
+                return;
+            }
+            try {
+                const res = await fetch(`/api/resolve_stream?url=${encodeURIComponent(url)}`);
+                const data = await res.json();
+                if (data && data.proxy) {
+                    playUrl = data.proxy;
+                } else if (data && data.url) {
+                    playUrl = `/api/proxy_video?url=${encodeURIComponent(data.url)}`;
+                } else {
+                    this.playStreamtapeEmbed(url, subtitles);
+                    return;
+                }
+            } catch (e) {
+                console.warn('Streamtape resolve failed', e);
+                this.playStreamtapeEmbed(url, subtitles);
+                return;
+            }
+        }
+
+        if (iframe) {
+            iframe.src = '';
+            iframe.style.display = 'none';
+        }
+        if (placeholder) placeholder.style.display = 'none';
+
+        videoEl.querySelectorAll('track').forEach(t => t.remove());
+        videoEl.pause();
+        videoEl.src = playUrl;
+        videoEl.style.display = 'block';
+
+        const loadedSubs = [];
+        if (subtitles && subtitles.length) {
+            for (let i = 0; i < subtitles.length; i++) {
+                const sub = subtitles[i];
+                try {
+                    const raw = await this.fetchSubtitleText(sub.id);
+                    if (!raw) continue;
+                    const vtt = this.srtToVtt(raw);
+                    const blob = new Blob([vtt], { type: 'text/vtt' });
+                    const blobUrl = URL.createObjectURL(blob);
+                    const track = document.createElement('track');
+                    track.kind = 'subtitles';
+                    track.label = sub.lang && sub.lang !== 'SUB' ? sub.lang : (sub.name || `Felirat ${i + 1}`);
+                    track.srclang = (sub.lang || 'hu').toLowerCase().slice(0, 2);
+                    track.src = blobUrl;
+                    if (loadedSubs.length === 0) track.default = true;
+                    videoEl.appendChild(track);
+                    loadedSubs.push(sub);
+                } catch (e) {
+                    console.warn('Subtitle load failed:', sub.name, e);
+                }
+            }
+        }
+
+        this.renderSubtitleSelector(loadedSubs, loadedSubs.length ? 0 : -1);
+
+        // If proxy fails → fall back to Streamtape embed
+        videoEl.onerror = () => {
+            if (url && url.includes('streamtape.com')) {
+                console.warn('Native/proxy failed, falling back to Streamtape embed');
+                this.playStreamtapeEmbed(url, subtitles);
+            } else {
+                this.showToast('A videó nem tölthető be ezzel a linkkel.', 'error');
+            }
+        };
+
+        videoEl.load();
+        videoEl.addEventListener('loadedmetadata', () => {
+            try {
+                if (videoEl.textTracks && videoEl.textTracks.length) {
+                    for (let i = 0; i < videoEl.textTracks.length; i++) {
+                        videoEl.textTracks[i].mode = i === 0 ? 'showing' : 'hidden';
+                    }
+                }
+            } catch (e) {}
+        }, { once: true });
+        videoEl.play().catch(() => {});
+    }
+
     // Show torrent detail modal (Carousel Player + Blueprint Layout)
     showDetailModal(torrentId) {
         const torrent = this.torrents.find(t => t.id === torrentId);
@@ -578,11 +882,43 @@ class App {
 
         // Build Media Items List for Top Stage & Carousel
         this.currentMediaList = [];
-        if (torrent.streamUrl) {
-            let cleanStream = torrent.streamUrl;
-            if (cleanStream.includes('streamtape.com/v/')) cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
-            this.currentMediaList.push({ type: 'iframe', label: '📺 Streamtape', url: cleanStream });
+        this.currentEpisodeIndex = 0;
+        this.currentSeasonIndex = 0;
+
+        // Normalize: seasons preferred, fallback to flat episodes as season 1
+        if ((!torrent.seasons || !torrent.seasons.length) && torrent.episodes && torrent.episodes.length) {
+            torrent.seasons = [{ season: 1, episodes: torrent.episodes }];
         }
+
+        const seriesSelector = document.getElementById('series-episode-selector');
+        if (torrent.seasons && torrent.seasons.length > 0) {
+            const firstSeason = torrent.seasons[0];
+            const first = firstSeason.episodes && firstSeason.episodes[0];
+            if (first) {
+                let clean = first.url;
+                if (clean.includes('streamtape.com/v/')) clean = clean.replace('streamtape.com/v/', 'streamtape.com/e/');
+                const mtype = this.isDirectVideoUrl(clean) ? 'video' : 'iframe';
+                this.currentMediaList.push({ type: mtype, label: `S${firstSeason.season}E${first.ep}`, url: clean });
+            }
+            if (seriesSelector) {
+                seriesSelector.style.display = 'block';
+                this.renderSeriesPlayer(torrent);
+            }
+        } else {
+            if (seriesSelector) seriesSelector.style.display = 'none';
+            if (torrent.streamUrl) {
+                let cleanStream = torrent.streamUrl;
+                if (cleanStream.includes('streamtape.com/v/')) cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
+                const mtype = this.isDirectVideoUrl(cleanStream) ? 'video' : 'iframe';
+                const label = mtype === 'video' ? '▶️ Videó' : '📺 Streamtape';
+                this.currentMediaList.push({ type: mtype, label, url: cleanStream });
+            }
+            // If no stream but direct download looks like video, use it in native player
+            if (!torrent.streamUrl && torrent.downloadUrl && this.isDirectVideoUrl(torrent.downloadUrl)) {
+                this.currentMediaList.push({ type: 'video', label: '▶️ Videó', url: torrent.downloadUrl });
+            }
+        }
+
         if (torrent.trailers && torrent.trailers.length > 0) {
             torrent.trailers.forEach((tUrl, idx) => {
                 const ytid = this.extractYouTubeId(tUrl);
@@ -596,10 +932,10 @@ class App {
         const updateStage = () => {
             const prevBtn = document.getElementById('cinema-prev-btn');
             const nextBtn = document.getElementById('cinema-next-btn');
+            const videoEl = document.getElementById('cinema-player-video');
 
             if (!this.currentMediaList || this.currentMediaList.length === 0) {
-                iframe.src = '';
-                iframe.style.display = 'none';
+                this.clearCinemaPlayers();
                 if (placeholder) {
                     placeholder.style.display = 'block';
                     placeholder.innerHTML = torrent.coverUrl ? `
@@ -617,13 +953,33 @@ class App {
             }
 
             const activeItem = this.currentMediaList[this.currentMediaIndex];
-            if (activeItem.type === 'iframe') {
+            if (placeholder) placeholder.style.display = 'none';
+
+            // Streamtape + direct video → playNativeVideo (handles embed vs native)
+            // YouTube trailers → iframe
+            const isYt = activeItem.url && (activeItem.url.includes('youtube.com') || activeItem.url.includes('youtu.be'));
+            const isStreamOrDirect = !isYt && activeItem.url && (
+                activeItem.type === 'video' ||
+                this.isDirectVideoUrl(activeItem.url) ||
+                activeItem.url.includes('streamtape.com')
+            );
+
+            if (isStreamOrDirect) {
+                this.playNativeVideo(activeItem.url, torrent.subtitles || []);
+            } else if (activeItem.type === 'iframe' || activeItem.url) {
+                if (videoEl) {
+                    videoEl.pause();
+                    videoEl.removeAttribute('src');
+                    videoEl.querySelectorAll('track').forEach(t => t.remove());
+                    videoEl.load();
+                    videoEl.style.display = 'none';
+                }
+                const subSel = document.getElementById('subtitle-track-selector');
+                if (subSel) subSel.style.display = 'none';
                 iframe.src = activeItem.url;
                 iframe.style.display = 'block';
-                if (placeholder) placeholder.style.display = 'none';
             } else {
-                iframe.src = '';
-                iframe.style.display = 'none';
+                this.clearCinemaPlayers();
                 if (placeholder) {
                     placeholder.style.display = 'block';
                     placeholder.innerHTML = `
@@ -688,13 +1044,10 @@ class App {
 
         updateStage();
 
-        // Render Bottom Download Options Grid
+        // Render Bottom Download Options Grid (no Online Lejátszás — already playing above)
         const actionsEl = modal.querySelector('.detail-actions');
         if (actionsEl) {
             actionsEl.innerHTML = '';
-            if (torrent.streamUrl) {
-                actionsEl.innerHTML += `<button class="btn btn-stream btn-lg" onclick="app.playStreamFromDetail('${torrent.id}')">▶️ Online Lejátszás</button>`;
-            }
             if (torrent.downloadUrl) {
                 actionsEl.innerHTML += `<button class="btn btn-download btn-lg" onclick="window.open('${torrent.downloadUrl}', '_blank')">⚡ Közvetlen Letöltés</button>`;
             }
@@ -704,6 +1057,16 @@ class App {
             if (torrent.torrentFileId) {
                 actionsEl.innerHTML += `<button class="btn btn-torrent btn-lg" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent Fájl Letöltése</button>`;
             }
+            // Subtitle downloads from Drive (.srt / .vtt)
+            if (torrent.subtitles && torrent.subtitles.length) {
+                torrent.subtitles.forEach(sub => {
+                    const label = sub.lang && sub.lang !== 'SUB' ? `💬 Felirat (${sub.lang})` : `💬 ${this.escapeHtml(sub.name)}`;
+                    actionsEl.innerHTML += `<button class="btn btn-lg btn-subtitle" onclick="app.downloadSubtitle('${sub.id}', '${this.escapeHtml(sub.name)}')">${label}</button>`;
+                });
+            }
+            // Hide the whole section if nothing to show
+            const section = modal.querySelector('.cinema-actions-section');
+            if (section) section.style.display = actionsEl.innerHTML.trim() ? '' : 'none';
         }
 
         modal.classList.add('active');
@@ -711,8 +1074,19 @@ class App {
 
     playStreamFromDetail(torrentId) {
         const torrent = this.torrents.find(t => t.id === torrentId);
-        if (!torrent || !torrent.streamUrl) return;
-        let cleanStream = torrent.streamUrl;
+        if (!torrent) return;
+        let cleanStream = '';
+        if (torrent.seasons && torrent.seasons.length) {
+            const s = torrent.seasons[this.currentSeasonIndex || 0] || torrent.seasons[0];
+            const ep = s?.episodes?.[this.currentEpisodeIndex || 0] || s?.episodes?.[0];
+            if (ep) cleanStream = ep.url;
+        } else if (torrent.episodes && torrent.episodes.length) {
+            const ep = torrent.episodes[this.currentEpisodeIndex || 0] || torrent.episodes[0];
+            if (ep) cleanStream = ep.url;
+        } else if (torrent.streamUrl) {
+            cleanStream = torrent.streamUrl;
+        }
+        if (!cleanStream) return;
         if (cleanStream.includes('streamtape.com/v/')) cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
         const iframe = document.getElementById('cinema-player-iframe');
         const placeholder = document.getElementById('cinema-player-placeholder');
@@ -721,6 +1095,118 @@ class App {
             iframe.style.display = 'block';
             placeholder.style.display = 'none';
         }
+    }
+
+    renderSeriesPlayer(torrent) {
+        const seasonTabs = document.getElementById('series-season-tabs');
+        const list = document.getElementById('series-episode-list');
+        const prevBtn = document.getElementById('series-ep-prev');
+        const nextBtn = document.getElementById('series-ep-next');
+        if (!list || !torrent.seasons) return;
+
+        const playEp = (sIdx, eIdx) => {
+            const season = torrent.seasons[sIdx];
+            const ep = season?.episodes?.[eIdx];
+            if (!ep) return;
+            this.currentSeasonIndex = sIdx;
+            this.currentEpisodeIndex = eIdx;
+
+            let clean = ep.url;
+            if (clean.includes('streamtape.com/v/')) clean = clean.replace('streamtape.com/v/', 'streamtape.com/e/');
+            const mtype = this.isDirectVideoUrl(clean) ? 'video' : 'iframe';
+
+            const trailers = this.currentMediaList.filter(m => m.label && m.label.startsWith('🎥'));
+            this.currentMediaList = [{ type: mtype, label: `S${season.season}E${ep.ep}`, url: clean }, ...trailers];
+            this.currentMediaIndex = 0;
+
+            const placeholder = document.getElementById('cinema-player-placeholder');
+            // Always try native (resolves Streamtape when possible + applies SRT)
+            this.playNativeVideo(clean, torrent.subtitles || []);
+            if (placeholder) placeholder.style.display = 'none';
+
+            list.querySelectorAll('.series-episode-btn').forEach((b, i) => b.classList.toggle('active', i === eIdx));
+
+            const tabsEl = document.getElementById('cinema-server-tabs');
+            if (tabsEl) {
+                tabsEl.innerHTML = this.currentMediaList.map((m, i) => `
+                    <button class="cinema-tab-btn ${i === 0 ? 'active' : ''}" data-index="${i}">${m.label}</button>
+                `).join('');
+                tabsEl.querySelectorAll('.cinema-tab-btn').forEach(tbtn => {
+                    tbtn.addEventListener('click', (e) => {
+                        const t = e.target.closest('.cinema-tab-btn');
+                        if (!t) return;
+                        this.currentMediaIndex = parseInt(t.dataset.index, 10);
+                        const item = this.currentMediaList[this.currentMediaIndex];
+                        if (item && iframe) {
+                            iframe.src = item.url;
+                            iframe.style.display = 'block';
+                            if (placeholder) placeholder.style.display = 'none';
+                        }
+                        tabsEl.querySelectorAll('.cinema-tab-btn').forEach((b, i) => b.classList.toggle('active', i === this.currentMediaIndex));
+                    });
+                });
+            }
+        };
+
+        const renderEps = (sIdx) => {
+            const season = torrent.seasons[sIdx];
+            if (!season) return;
+            list.innerHTML = (season.episodes || []).map((ep, idx) => `
+                <button class="series-episode-btn ${sIdx === this.currentSeasonIndex && idx === this.currentEpisodeIndex ? 'active' : ''}" data-idx="${idx}">
+                    ${ep.ep}. rész
+                </button>
+            `).join('');
+            list.querySelectorAll('.series-episode-btn').forEach(btn => {
+                btn.addEventListener('click', () => playEp(sIdx, parseInt(btn.dataset.idx, 10)));
+            });
+            list.scrollLeft = 0;
+        };
+
+        // Season tabs (hide if only 1 season)
+        if (seasonTabs) {
+            if (torrent.seasons.length > 1) {
+                seasonTabs.style.display = 'flex';
+                seasonTabs.innerHTML = torrent.seasons.map((s, i) => `
+                    <button class="series-season-btn ${i === 0 ? 'active' : ''}" data-sidx="${i}">${s.season}. évad</button>
+                `).join('');
+                seasonTabs.querySelectorAll('.series-season-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        const sIdx = parseInt(btn.dataset.sidx, 10);
+                        seasonTabs.querySelectorAll('.series-season-btn').forEach(b => b.classList.remove('active'));
+                        btn.classList.add('active');
+                        this.currentSeasonIndex = sIdx;
+                        this.currentEpisodeIndex = 0;
+                        renderEps(sIdx);
+                        playEp(sIdx, 0);
+                    });
+                });
+            } else {
+                seasonTabs.style.display = 'none';
+                seasonTabs.innerHTML = '';
+            }
+        }
+
+        // Horizontal arrows
+        if (prevBtn) prevBtn.onclick = () => { list.scrollBy({ left: -200, behavior: 'smooth' }); };
+        if (nextBtn) nextBtn.onclick = () => { list.scrollBy({ left: 200, behavior: 'smooth' }); };
+
+        // Drag-to-scroll (no visible scrollbar)
+        let isDown = false, startX = 0, scrollLeft = 0;
+        list.onmousedown = (e) => {
+            isDown = true;
+            startX = e.pageX - list.offsetLeft;
+            scrollLeft = list.scrollLeft;
+        };
+        list.onmouseleave = () => { isDown = false; };
+        list.onmouseup = () => { isDown = false; };
+        list.onmousemove = (e) => {
+            if (!isDown) return;
+            e.preventDefault();
+            const x = e.pageX - list.offsetLeft;
+            list.scrollLeft = scrollLeft - (x - startX);
+        };
+
+        renderEps(0);
     }
 
     // Extract YouTube video ID from various URL formats
@@ -748,9 +1234,16 @@ class App {
             streamUrl = torrentIdOrUrl;
         } else {
             const torrent = this.torrents.find(t => t.id === torrentIdOrUrl);
-            if (torrent && torrent.streamUrl) {
-                streamUrl = torrent.streamUrl;
+            if (torrent) {
                 title = `▶️ ${torrent.title}`;
+                // Series → open detail modal (episode picker)
+                if ((torrent.seasons && torrent.seasons.length) || (torrent.episodes && torrent.episodes.length)) {
+                    this.showDetailModal(torrent.id);
+                    return;
+                }
+                if (torrent.streamUrl) {
+                    streamUrl = torrent.streamUrl;
+                }
             }
         }
 
@@ -779,8 +1272,157 @@ class App {
         if (modal) modal.classList.remove('active');
     }
 
-    // Handle add torrent form
+    // Toggle film single-stream vs series seasons form
+    updateStreamFormByCategory() {
+        const category = document.getElementById('add-category')?.value;
+        const filmGroup = document.getElementById('film-stream-group');
+        const seriesGroup = document.getElementById('series-stream-group');
+        if (!filmGroup || !seriesGroup) return;
+
+        if (category === 'Sorozat') {
+            filmGroup.style.display = 'none';
+            seriesGroup.style.display = 'block';
+            const editor = document.getElementById('seasons-editor');
+            if (editor && editor.children.length === 0) {
+                this.addSeasonBlock();
+            }
+        } else {
+            filmGroup.style.display = 'block';
+            seriesGroup.style.display = 'none';
+        }
+    }
+
+    addSeasonBlock(episodes = null) {
+        const editor = document.getElementById('seasons-editor');
+        if (!editor) return;
+        const seasonNum = editor.children.length + 1;
+        const block = document.createElement('div');
+        block.className = 'season-block';
+        block.innerHTML = `
+            <div class="season-block-header">
+                <span class="season-label">${seasonNum}. évad</span>
+                <button type="button" class="btn-remove-season" title="Évad törlése">✕</button>
+            </div>
+            <div class="episodes-list-editor"></div>
+            <button type="button" class="btn-add-ep-in-season">+ Rész hozzáadása</button>
+        `;
+        editor.appendChild(block);
+
+        const list = block.querySelector('.episodes-list-editor');
+        if (episodes && episodes.length) {
+            episodes.forEach(ep => this.addEpisodeEditRow(list, ep.url));
+        } else {
+            this.addEpisodeEditRow(list);
+        }
+
+        block.querySelector('.btn-remove-season').addEventListener('click', () => {
+            block.remove();
+            this.renumberSeasonBlocks();
+        });
+        block.querySelector('.btn-add-ep-in-season').addEventListener('click', () => {
+            this.addEpisodeEditRow(list);
+        });
+    }
+
+    renumberSeasonBlocks() {
+        const editor = document.getElementById('seasons-editor');
+        if (!editor) return;
+        editor.querySelectorAll('.season-block').forEach((block, i) => {
+            const label = block.querySelector('.season-label');
+            if (label) label.textContent = `${i + 1}. évad`;
+        });
+    }
+
+    addEpisodeEditRow(listEl, url = '') {
+        if (!listEl) return;
+        const num = listEl.children.length + 1;
+        const row = document.createElement('div');
+        row.className = 'episode-edit-row';
+        row.innerHTML = `
+            <span class="ep-num">${num}</span>
+            <input type="text" class="ep-url" placeholder="https://streamtape.com/v/..." value="${this.escapeHtml(url)}">
+            <button type="button" class="btn-remove-ep" title="Törlés">✕</button>
+        `;
+        listEl.appendChild(row);
+        row.querySelector('.btn-remove-ep').addEventListener('click', () => {
+            row.remove();
+            listEl.querySelectorAll('.episode-edit-row').forEach((r, i) => {
+                const n = r.querySelector('.ep-num');
+                if (n) n.textContent = i + 1;
+            });
+        });
+    }
+
+    collectSeasonsFromForm() {
+        const editor = document.getElementById('seasons-editor');
+        if (!editor) return [];
+        const seasons = [];
+        editor.querySelectorAll('.season-block').forEach((block, sIdx) => {
+            const episodes = [];
+            block.querySelectorAll('.episode-edit-row').forEach((row, eIdx) => {
+                const url = (row.querySelector('.ep-url')?.value || '').trim();
+                if (url) episodes.push({ ep: eIdx + 1, url });
+            });
+            if (episodes.length) {
+                seasons.push({ season: sIdx + 1, episodes });
+            }
+        });
+        return seasons;
+    }
+
+    resetAddForm() {
+        document.getElementById('add-form')?.reset();
+        document.getElementById('edit-torrent-id').value = '';
+        document.getElementById('add-modal-title').textContent = 'Új Torrent Hozzáadása';
+        document.getElementById('add-submit-text').textContent = 'Torrent Feltöltése';
+        const editor = document.getElementById('seasons-editor');
+        if (editor) editor.innerHTML = '';
+        const dropText = document.querySelector('.drop-zone-text');
+        if (dropText) dropText.textContent = 'Húzd ide a borítóképet vagy kattints';
+        this.updateStreamFormByCategory();
+    }
+
+    openEditModal(torrentId) {
+        const torrent = this.torrents.find(t => t.id === torrentId);
+        if (!torrent) return;
+
+        this.resetAddForm();
+        document.getElementById('edit-torrent-id').value = torrentId;
+        document.getElementById('add-modal-title').textContent = 'Szerkesztés: ' + torrent.title;
+        document.getElementById('add-submit-text').textContent = 'Mentés';
+
+        document.getElementById('add-title').value = torrent.title || '';
+        document.getElementById('add-category').value = torrent.category || '';
+        document.getElementById('add-magnet').value = torrent.magnetLink || '';
+        document.getElementById('add-download').value = torrent.downloadUrl || '';
+        document.getElementById('add-description').value = torrent.description || '';
+        if (torrent.trailers && torrent.trailers.length) {
+            document.getElementById('add-trailers').value = torrent.trailers.join('\n');
+        }
+
+        this.updateStreamFormByCategory();
+
+        if (torrent.category === 'Sorozat') {
+            const editor = document.getElementById('seasons-editor');
+            if (editor) editor.innerHTML = '';
+            if (torrent.seasons && torrent.seasons.length) {
+                torrent.seasons.forEach(s => this.addSeasonBlock(s.episodes));
+            } else if (torrent.episodes && torrent.episodes.length) {
+                // Legacy flat episodes → one season
+                this.addSeasonBlock(torrent.episodes);
+            } else {
+                this.addSeasonBlock();
+            }
+        } else if (torrent.streamUrl) {
+            document.getElementById('add-stream').value = torrent.streamUrl;
+        }
+
+        document.getElementById('add-modal').classList.add('active');
+    }
+
+    // Handle add / edit torrent form
     async handleAddTorrent() {
+        const editId = document.getElementById('edit-torrent-id')?.value || '';
         const title = document.getElementById('add-title').value.trim();
         const category = document.getElementById('add-category').value;
         const magnetLink = document.getElementById('add-magnet').value.trim();
@@ -791,6 +1433,13 @@ class App {
         const coverFile = document.getElementById('cover-input').files[0];
         const torrentFile = document.getElementById('torrent-input').files[0];
         const description = document.getElementById('add-description').value.trim();
+        const subtitleInput = document.getElementById('subtitle-input');
+        const subtitleFiles = subtitleInput && subtitleInput.files ? Array.from(subtitleInput.files) : [];
+
+        let seasons = null;
+        if (category === 'Sorozat') {
+            seasons = this.collectSeasonsFromForm();
+        }
 
         if (!title || !category) {
             this.showToast('A cím és kategória kötelező!', 'error');
@@ -798,22 +1447,34 @@ class App {
         }
 
         const submitBtn = document.querySelector('#add-form .btn-submit');
+        const submitText = document.getElementById('add-submit-text');
         submitBtn.disabled = true;
-        submitBtn.textContent = 'Feltöltés...';
+        if (submitText) submitText.textContent = editId ? 'Mentés...' : 'Feltöltés...';
 
         try {
-            await driveAPI.addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers });
-            this.showToast('Sikeresen hozzáadva!', 'success');
+            const payload = {
+                title, category, coverFile, magnetLink, torrentFile, description,
+                streamUrl: category === 'Sorozat' ? '' : streamUrl,
+                downloadUrl, trailers, seasons, subtitleFiles
+            };
+
+            if (editId) {
+                await driveAPI.updateTorrent(editId, payload);
+                this.showToast('Sikeresen frissítve!', 'success');
+            } else {
+                await driveAPI.addTorrent(payload);
+                this.showToast('Sikeresen hozzáadva!', 'success');
+            }
+
             document.getElementById('add-modal').classList.remove('active');
-            document.getElementById('add-form').reset();
-            document.querySelector('.drop-zone-text').textContent = 'Húzd ide a borítóképet vagy kattints';
+            this.resetAddForm();
             await this.loadTorrents();
         } catch (error) {
-            console.error('Add torrent error:', error);
-            this.showToast(error.message || 'Hiba történt a feltöltéskor!', 'error');
+            console.error('Add/edit torrent error:', error);
+            this.showToast(error.message || 'Hiba történt!', 'error');
         } finally {
             submitBtn.disabled = false;
-            submitBtn.textContent = 'Hozzáadás';
+            if (submitText) submitText.textContent = editId ? 'Mentés' : 'Torrent Feltöltése';
         }
     }
 
