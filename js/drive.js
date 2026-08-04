@@ -53,12 +53,29 @@ class DriveAPI {
             return '';
         };
 
+        // Method 0: Read Google Drive file description metadata via API Key (Fastest & 100% reliable)
+        if (CONFIG.GOOGLE_API_KEY) {
+            try {
+                const controller = new AbortController();
+                const tid = setTimeout(() => controller.abort(), 2500);
+                const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=description&key=${CONFIG.GOOGLE_API_KEY}`, { signal: controller.signal });
+                clearTimeout(tid);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.description && data.description.trim()) {
+                        const parsed = parseText(data.description.trim());
+                        if (parsed) return parsed;
+                    }
+                }
+            } catch (e) {}
+        }
+
         // Method 1: Local server proxy (/api/read_text) — only on localhost
         if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
             try {
                 const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
                 const controller = new AbortController();
-                const tid = setTimeout(() => controller.abort(), 1000);
+                const tid = setTimeout(() => controller.abort(), 4000);
                 const res = await fetch(`/api/read_text?id=${fileId}${titleParam}`, { signal: controller.signal });
                 clearTimeout(tid);
                 if (res.ok) {
@@ -128,6 +145,9 @@ class DriveAPI {
             torrentFileId: null,
             torrentFileName: null,
             description: null,
+            streamUrl: null,
+            downloadUrl: null,
+            trailers: [],
         };
 
         for (const file of files) {
@@ -152,7 +172,58 @@ class DriveAPI {
                     if (catText && catText.trim()) torrent.category = catText.trim();
                 }).catch(() => {});
             }
-            // 4. Text files (.txt)
+            // 4. Stream file (stream.txt)
+            else if (nameLower === 'stream.txt' || nameLower === 'streamtape.txt') {
+                if (file.description && file.description.trim()) {
+                    let sUrl = file.description.trim();
+                    if (sUrl.includes('streamtape.com/v/')) sUrl = sUrl.replace('streamtape.com/v/', 'streamtape.com/e/');
+                    torrent.streamUrl = sUrl;
+                }
+                this.readTextFile(file.id).then(t => {
+                    if (t && t.trim()) {
+                        let sUrl = t.trim();
+                        if (sUrl.includes('streamtape.com/v/')) sUrl = sUrl.replace('streamtape.com/v/', 'streamtape.com/e/');
+                        torrent.streamUrl = sUrl;
+                    }
+                }).catch(() => {});
+            }
+            // 5. Download link file (download.txt, letoltes.txt)
+            else if (nameLower === 'download.txt' || nameLower === 'letoltes.txt') {
+                if (file.description && file.description.trim()) {
+                    torrent.downloadUrl = file.description.trim();
+                }
+                this.readTextFile(file.id).then(t => {
+                    if (t && t.trim()) torrent.downloadUrl = t.trim();
+                }).catch(() => {});
+            }
+            // 6. YouTube trailer file (trailers.txt, trailer.txt)
+            else if (nameLower === 'trailers.txt' || nameLower === 'trailer.txt') {
+                if (file.description && file.description.trim()) {
+                    torrent.trailers = file.description.trim().split('\n').map(u => u.trim()).filter(u => u);
+                }
+                this.readTextFile(file.id).then(t => {
+                    if (t && t.trim()) {
+                        torrent.trailers = t.trim().split('\n').map(u => u.trim()).filter(u => u);
+                    }
+                }).catch(() => {});
+            }
+            // 7. Description file (leiras.txt, description.txt)
+            else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || nameLower.startsWith('leiras')) {
+                torrent.descriptionFileId = file.id;
+                if (file.description && file.description.trim()) {
+                    torrent.description = file.description.trim();
+                }
+                this.readTextFile(file.id, folder.name).then(text => {
+                    if (text && text.trim()) {
+                        torrent.description = text.trim();
+                        const descEl = document.querySelector('#detail-modal .detail-description');
+                        if (descEl && window.app && window.app.currentDetailId === torrent.id) {
+                            descEl.textContent = text.trim();
+                        }
+                    }
+                }).catch(() => {});
+            }
+            // 8. Other text files (.txt)
             else if (nameLower.endsWith('.txt')) {
                 if (nameLower === 'magnet.txt' || nameLower.startsWith('magnet')) {
                     torrent.magnetFileId = file.id;
@@ -168,18 +239,14 @@ class DriveAPI {
                     }
                 }
                 this.readTextFile(file.id, folder.name).then(text => {
-                    if (text) {
-                        if (text.includes('magnet:?')) {
-                            const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                            if (match) {
-                                let uri = match[0];
-                                if (!uri.toLowerCase().includes('&dn=')) {
-                                    uri += `&dn=${encodeURIComponent(folder.name)}`;
-                                }
-                                torrent.magnetLink = uri;
+                    if (text && text.includes('magnet:?')) {
+                        const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                        if (match) {
+                            let uri = match[0];
+                            if (!uri.toLowerCase().includes('&dn=')) {
+                                uri += `&dn=${encodeURIComponent(folder.name)}`;
                             }
-                        } else if (nameLower === 'leiras.txt' || nameLower === 'description.txt' || !torrent.description) {
-                            torrent.description = text;
+                            torrent.magnetLink = uri;
                         }
                     }
                 }).catch(() => {});
@@ -239,7 +306,8 @@ class DriveAPI {
                 const tFiles = isCategory ? await this.listFiles(tf.id) : files;
                 for (const file of tFiles) {
                     const nameLower = file.name.toLowerCase();
-                    if ((nameLower === 'magnet.txt' || nameLower === 'kategoria.txt') && !file.description) {
+                    const isTargetFile = ['magnet.txt', 'kategoria.txt', 'leiras.txt', 'description.txt', 'stream.txt', 'download.txt', 'trailers.txt', 'trailer.txt', 'letoltes.txt'].includes(nameLower);
+                    if (isTargetFile && !file.description) {
                         try {
                             // Read content via OAuth
                             const res = await fetch(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {
@@ -395,7 +463,7 @@ class DriveAPI {
     }
 
     // Add a new torrent: creates folder directly in root Drive folder + uploads files
-    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description }) {
+    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers }) {
         // Create the torrent folder directly inside the root Google Drive folder
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
@@ -415,14 +483,34 @@ class DriveAPI {
             await this.uploadTextFile(magnetLink.trim(), folder.id, 'magnet.txt', magnetLink.trim());
         }
 
+        // Upload stream.txt (Streamtape embed link)
+        if (streamUrl) {
+            let cleanStream = streamUrl.trim();
+            if (cleanStream.includes('streamtape.com/v/')) {
+                cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
+            }
+            await this.uploadTextFile(cleanStream, folder.id, 'stream.txt', cleanStream);
+        }
+
+        // Upload download.txt (direct download link)
+        if (downloadUrl) {
+            await this.uploadTextFile(downloadUrl.trim(), folder.id, 'download.txt', downloadUrl.trim());
+        }
+
+        // Upload trailers.txt (YouTube trailer links, one per line)
+        if (trailers && trailers.length > 0) {
+            const trailersContent = trailers.join('\n');
+            await this.uploadTextFile(trailersContent, folder.id, 'trailers.txt', trailersContent);
+        }
+
         // Upload .torrent file
         if (torrentFile) {
             await this.uploadFile(torrentFile, folder.id, torrentFile.name);
         }
 
-        // Upload leiras.txt
+        // Upload leiras.txt (description = text content for GitHub Pages metadata access)
         if (description) {
-            await this.uploadTextFile(description, folder.id, 'leiras.txt');
+            await this.uploadTextFile(description, folder.id, 'leiras.txt', description);
         }
 
         // Clear cache to refresh

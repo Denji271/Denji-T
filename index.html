@@ -7,7 +7,7 @@
     <title>Denji-T — Forum</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
     <link rel="icon" href="icon.jpg">
 </head>
@@ -21,142 +21,151 @@
             <div class="login-bg-orb login-bg-orb-3"></div>
         </div>
         <div class="login-card">
-            <div class="login-logo">
-                <img src="icon.jpg" alt="Logo" class="login-logo-img">
-                <h1 class="login-logo-text">Denji-T</h1>
+            <div class="browser-chrome">
+                <div class="chrome-dots"><i></i><i></i><i></i></div>
+                <span class="chrome-title">DENJI-T // PORTAL</span>
             </div>
+            <div class="login-card-inner">
+                <div class="login-logo">
+                    <img src="icon.jpg" alt="Logo" class="login-logo-img">
+                    <h1 class="login-logo-text">Denji-T</h1>
+                </div>
 
-            <!-- Login Mode Tabs -->
-            <div class="login-mode-tabs">
-                <button type="button" class="login-mode-btn active" data-mode="passcode">Passcode</button>
-                <button type="button" class="login-mode-btn" data-mode="admin">Admin</button>
+                <!-- Login Mode Tabs -->
+                <div class="login-mode-tabs">
+                    <button type="button" class="login-mode-btn active" data-mode="passcode">Passcode</button>
+                    <button type="button" class="login-mode-btn" data-mode="admin">Admin</button>
+                </div>
+
+                <!-- Passcode Login Form -->
+                <form id="passcode-login-form" class="login-form-view active" autocomplete="off">
+                    <div class="input-group">
+                        <input type="password" id="passcode-input" required placeholder=" " autocomplete="off">
+                        <label for="passcode-input">Passcode</label>
+                        <span class="input-icon">🔑</span>
+                    </div>
+                    <div id="passcode-error" class="login-error"></div>
+                    <button type="submit" class="btn btn-login">
+                        <span>Belépés</span>
+                        <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </button>
+                </form>
+
+                <!-- Admin Login Form -->
+                <form id="login-form" class="login-form-view" autocomplete="off">
+                    <div class="input-group">
+                        <input type="text" id="username-input" required placeholder=" " autocomplete="off">
+                        <label for="username-input">Felhasználónév</label>
+                        <span class="input-icon">👤</span>
+                    </div>
+                    <div class="input-group">
+                        <input type="password" id="password-input" required placeholder=" " autocomplete="off">
+                        <label for="password-input">Jelszó</label>
+                        <span class="input-icon">🔒</span>
+                    </div>
+                    <div id="login-error" class="login-error"></div>
+                    <button type="submit" id="login-btn" class="btn btn-login">
+                        <span>Belépés</span>
+                        <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+                    </button>
+                </form>
             </div>
-
-            <!-- Passcode Login Form -->
-            <form id="passcode-login-form" class="login-form-view active" autocomplete="off">
-                <div class="input-group">
-                    <input type="password" id="passcode-input" required placeholder=" " autocomplete="off">
-                    <label for="passcode-input">Passcode</label>
-                    <span class="input-icon">🔑</span>
-                </div>
-                <div id="passcode-error" class="login-error"></div>
-                <button type="submit" class="btn btn-login">
-                    <span>Belépés</span>
-                    <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                </button>
-            </form>
-
-            <!-- Admin Login Form -->
-            <form id="login-form" class="login-form-view" autocomplete="off">
-                <div class="input-group">
-                    <input type="text" id="username-input" required placeholder=" " autocomplete="off">
-                    <label for="username-input">Felhasználónév</label>
-                    <span class="input-icon">👤</span>
-                </div>
-                <div class="input-group">
-                    <input type="password" id="password-input" required placeholder=" " autocomplete="off">
-                    <label for="password-input">Jelszó</label>
-                    <span class="input-icon">🔒</span>
-                </div>
-                <div id="login-error" class="login-error"></div>
-                <button type="submit" id="login-btn" class="btn btn-login">
-                    <span>Belépés</span>
-                    <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                </button>
-            </form>
         </div>
     </div>
 
     <!-- ==================== MAIN PAGE ==================== -->
     <div id="main-page">
-
-        <!-- Header -->
-        <header id="header">
-            <div class="header-left">
-                <button id="sidebar-toggle" class="btn-icon" title="Menü">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-                </button>
-                <div class="header-logo">
-                    <img src="icon.jpg" alt="Logo" class="header-logo-img">
-                    <span class="header-logo-text">Denji-T</span>
-                </div>
-            </div>
-            <div class="header-right">
-                <span id="user-greeting" class="user-greeting-badge"></span>
-                <button id="manage-passcodes-btn" class="btn btn-icon-text admin-only" title="Belépési kódok kezelése" style="display: none;">
-                    <span>⚙️ Kódok Kezelése</span>
-                </button>
-                <button id="refresh-btn" class="btn-icon" title="Frissítés">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                </button>
-                <button id="logout-btn" class="btn btn-logout" title="Kijelentkezés">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                    <span>Kilépés</span>
-                </button>
-            </div>
-        </header>
-
-        <!-- Sidebar -->
-        <aside id="sidebar">
-            <div class="sidebar-inner">
-                <!-- Search -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Keresés</h3>
-                    <div class="search-wrapper">
-                        <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                        <input type="text" id="search-input" placeholder="Keresés név alapján..." autocomplete="off">
+        <div class="app-frame">
+            <!-- Header -->
+            <header id="header">
+                <div class="header-left">
+                    <button id="sidebar-toggle" class="btn-icon" title="Menü">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                    </button>
+                    <div class="header-logo">
+                        <img src="icon.jpg" alt="Logo" class="header-logo-img">
+                        <span class="header-logo-text">Denji-T</span>
                     </div>
                 </div>
+                <div class="header-right">
+                    <span id="user-greeting" class="user-greeting-badge"></span>
+                    <button id="manage-passcodes-btn" class="btn btn-icon-text admin-only" title="Belépési kódok kezelése" style="display: none;">
+                        <span>⚙️ Kódok Kezelése</span>
+                    </button>
+                    <button id="refresh-btn" class="btn-icon" title="Frissítés">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+                    </button>
+                    <button id="logout-btn" class="btn btn-logout" title="Kijelentkezés">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                        <span>Kilépés</span>
+                    </button>
+                </div>
+            </header>
 
-                <!-- Category Filters -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Kategóriák</h3>
-                    <div id="category-filters">
-                        <label class="filter-checkbox">
-                            <input type="checkbox" class="category-checkbox" data-category="Játék" checked>
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-label"><span class="category-dot" style="background: #10b981"></span>🎮 Játék</span>
-                        </label>
-                        <label class="filter-checkbox">
-                            <input type="checkbox" class="category-checkbox" data-category="Film" checked>
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-label"><span class="category-dot" style="background: #f59e0b"></span>🎬 Film</span>
-                        </label>
-                        <label class="filter-checkbox">
-                            <input type="checkbox" class="category-checkbox" data-category="Sorozat" checked>
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-label"><span class="category-dot" style="background: #3b82f6"></span>📺 Sorozat</span>
-                        </label>
+            <div class="app-body">
+                <!-- Sidebar -->
+                <aside id="sidebar">
+                    <div class="sidebar-inner">
+                        <!-- Search -->
+                        <div class="sidebar-section">
+                            <h3 class="sidebar-title">Keresés</h3>
+                            <div class="search-wrapper">
+                                <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                <input type="text" id="search-input" placeholder="Keresés név alapján..." autocomplete="off">
+                            </div>
+                        </div>
+
+                        <!-- Category Filters -->
+                        <div class="sidebar-section">
+                            <h3 class="sidebar-title">Kategóriák</h3>
+                            <div id="category-filters">
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" class="category-checkbox" data-category="Játék" checked>
+                                    <span class="checkbox-custom"></span>
+                                    <span class="checkbox-label"><span class="category-dot" style="background: #818cf8"></span>🎮 Játék</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" class="category-checkbox" data-category="Film" checked>
+                                    <span class="checkbox-custom"></span>
+                                    <span class="checkbox-label"><span class="category-dot" style="background: #f59e0b"></span>🎬 Film</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" class="category-checkbox" data-category="Sorozat" checked>
+                                    <span class="checkbox-custom"></span>
+                                    <span class="checkbox-label"><span class="category-dot" style="background: #34d399"></span>📺 Sorozat</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Sort -->
+                        <div class="sidebar-section">
+                            <h3 class="sidebar-title">Rendezés</h3>
+                            <select id="sort-select" class="sort-select">
+                                <option value="name-asc">Név (A → Z)</option>
+                                <option value="name-desc">Név (Z → A)</option>
+                                <option value="date-new">Legújabb elöl</option>
+                                <option value="date-old">Legrégebbi elöl</option>
+                            </select>
+                        </div>
                     </div>
-                </div>
+                </aside>
 
-                <!-- Sort -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Rendezés</h3>
-                    <select id="sort-select" class="sort-select">
-                        <option value="name-asc">Név (A → Z)</option>
-                        <option value="name-desc">Név (Z → A)</option>
-                        <option value="date-new">Legújabb elöl</option>
-                        <option value="date-old">Legrégebbi elöl</option>
-                    </select>
-                </div>
+                <!-- Main Content -->
+                <main id="content">
+                    <!-- Loading Spinner -->
+                    <div id="loading-spinner">
+                        <div class="spinner"></div>
+                        <p>Fájlok betöltése Google Drive-ról...</p>
+                    </div>
+
+                    <!-- Torrent Grid -->
+                    <div id="torrent-grid"></div>
+                </main>
             </div>
-        </aside>
+        </div>
 
-        <!-- Main Content -->
-        <main id="content">
-            <!-- Loading Spinner -->
-            <div id="loading-spinner">
-                <div class="spinner"></div>
-                <p class="spinner-text">Adatok betöltése...</p>
-            </div>
-
-            <!-- Torrent Grid -->
-            <div id="torrent-grid"></div>
-        </main>
-
-        <!-- FAB Add Button (admin only) -->
-        <button id="add-btn" class="fab" title="Új torrent hozzáadása">
+        <!-- Floating Add Torrent Button (Admin only) -->
+        <button id="add-torrent-fab" class="admin-only" title="Új torrent hozzáadása" style="display: none;">
             <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         </button>
     </div>
@@ -173,9 +182,9 @@
             <form id="add-form">
                 <div class="modal-body">
                     <!-- Quick Drive Notice Banner -->
-                    <div style="background: rgba(0, 240, 255, 0.08); border: 1px solid rgba(0, 240, 255, 0.2); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: rgba(255,255,255,0.85); display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                    <div style="background: rgba(129, 140, 248, 0.08); border: 1px solid rgba(129, 140, 248, 0.2); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
                         <span>📂 Feltöltés közvetlenül a Google Drive-ba</span>
-                        <a href="https://drive.google.com/drive/folders/1EMBjhqjnOIUh4fXxcgKK77w3gxnOqVe5" target="_blank" style="background: var(--accent-gradient); color: white; padding: 6px 12px; border-radius: 6px; font-weight: 600; font-size: 12px; white-space: nowrap;">Megnyitás Drive-ban ↗</a>
+                        <a href="https://drive.google.com/drive/folders/1EMBjhqjnOIUh4fXxcgKK77w3gxnOqVe5" target="_blank" style="background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 12px; white-space: nowrap;">Megnyitás Drive-ban ↗</a>
                     </div>
 
                     <!-- Title -->
@@ -219,6 +228,24 @@
                         </div>
                     </div>
 
+                    <!-- Streamtape Link -->
+                    <div class="form-group">
+                        <label for="add-stream" class="form-label">🎬 Streamtape Link (Online nézéshez)</label>
+                        <input type="text" id="add-stream" class="form-input" placeholder="pl. https://streamtape.com/v/abc123xyz">
+                    </div>
+
+                    <!-- Direct Download Link -->
+                    <div class="form-group">
+                        <label for="add-download" class="form-label">⬇️ Közvetlen Letöltés Link</label>
+                        <input type="text" id="add-download" class="form-input" placeholder="pl. https://buzzheavier.com/d/... vagy bármilyen direkt link">
+                    </div>
+
+                    <!-- YouTube Trailer Links -->
+                    <div class="form-group">
+                        <label for="add-trailers" class="form-label">🎥 YouTube Trailer Linkek (soronként egy)</label>
+                        <textarea id="add-trailers" class="form-input form-textarea" rows="3" placeholder="Soronként egy YouTube link, pl.:\nhttps://www.youtube.com/watch?v=abc123\nhttps://youtu.be/xyz456"></textarea>
+                    </div>
+
                     <!-- Description -->
                     <div class="form-group">
                         <label for="add-description" class="form-label">Leírás</label>
@@ -251,7 +278,7 @@
 
                 <!-- Add New Passcode Form -->
                 <form id="add-passcode-form" style="background: rgba(0,0,0,0.25); padding: 16px; border-radius: 12px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.08);">
-                    <h4 style="font-size: 14px; margin-bottom: 12px; color: var(--accent-cyan);">Új kód hozzáadása</h4>
+                    <h4 style="font-size: 14px; margin-bottom: 12px; color: var(--accent);">Új kód hozzáadása</h4>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
                         <div>
                             <label class="form-label">Név</label>
@@ -272,20 +299,65 @@
         </div>
     </div>
 
-    <!-- ==================== DETAIL MODAL ==================== -->
+    <!-- ==================== STREAM PLAYER MODAL ==================== -->
+    <div id="stream-modal" class="modal-overlay">
+        <div class="modal-content modal-content-lg" style="max-width: 900px; padding: 0; overflow: hidden;">
+            <div class="modal-header" style="padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle);">
+                <h3 id="stream-modal-title" class="modal-title" style="font-size: 16px; display: flex; align-items: center; gap: 8px;">
+                    <span>▶️ Online Lejátszás</span>
+                </h3>
+                <button class="modal-close btn-icon" onclick="app.closeStreamModal()" title="Bezárás">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="stream-player-container" style="position: relative; width: 100%; padding-top: 56.25%; background: #000;">
+                <iframe id="stream-player-iframe" src="" style="position: absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== DETAIL / CINEMA MODAL ==================== -->
     <div id="detail-modal" class="modal-overlay">
-        <div class="modal-content modal-content-lg">
+        <div class="modal-content modal-content-cinema">
             <button class="modal-close btn-icon" title="Bezárás">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
             </button>
-            <div class="detail-cover"></div>
-            <div class="detail-body">
+
+            <!-- 1. Top Edge-to-Edge Hero Stage with Navigation Arrows -->
+            <div id="cinema-hero-stage" class="cinema-hero-stage">
+                <button class="cinema-arrow cinema-arrow-prev" id="cinema-prev-btn" title="Előző média">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+
+                <div id="cinema-player-wrapper" class="cinema-player-box">
+                    <iframe id="cinema-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+                    <div id="cinema-player-placeholder" class="cinema-placeholder">
+                        <div class="stage-cover-bg"></div>
+                    </div>
+                </div>
+
+                <button class="cinema-arrow cinema-arrow-next" id="cinema-next-btn" title="Következő média">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+            </div>
+
+            <!-- 2. Media Selector Buttons (trailer 1, trailer 2, stream) -->
+            <div id="cinema-server-tabs" class="cinema-server-tabs"></div>
+
+            <!-- 3. Content Section: Title, Meta & Description -->
+            <div class="cinema-info-box">
                 <div class="detail-meta">
                     <span class="detail-category"></span>
                     <span class="detail-date"></span>
                 </div>
                 <h2 class="detail-title"></h2>
-                <p class="detail-description"></p>
+                <div class="detail-description-card">
+                    <div class="detail-description"></div>
+                </div>
+            </div>
+
+            <!-- 4. Bottom Download Options Grid -->
+            <div class="cinema-actions-section">
                 <div class="detail-actions"></div>
             </div>
         </div>
