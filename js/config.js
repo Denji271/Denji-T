@@ -10,7 +10,8 @@ const CONFIG = {
     ADMIN_USERNAME: 'Denji',
     ADMIN_PASSWORD_HASH: 'a0c342dffe8643d009fb8881f5bfe6ec20514666813b024fdd7f385caa7ab607',
     PASSCODES: [
-        { id: '1', name: 'Barát', code: '7788', role: 'guest' }
+        { id: '1', name: 'Barát', code: '7788', role: 'guest' },
+        { id: '2', name: 'Anya', code: '7777', role: 'guest' }
     ],
     CACHE_TTL: 5 * 60 * 1000, // 5 minutes
 };

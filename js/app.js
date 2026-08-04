@@ -126,6 +126,18 @@ class App {
     applyFilters() {
         let results = [...this.torrents];
 
+        // 7777 (Anya)  → CSAK a Magyar tartalmakat látja
+        // Többi vendég → a Magyar tartalmakat NEM látja
+        // Admin        → mindent lát
+        const is7777 = is7777User();
+        const admin = isAdmin();
+
+        if (is7777) {
+            results = results.filter(t => !!t.isMagyar);
+        } else if (!admin) {
+            results = results.filter(t => !t.isMagyar);
+        }
+
         // Search filter
         if (this.currentFilters.search) {
             const query = this.currentFilters.search.toLowerCase();
@@ -157,6 +169,7 @@ class App {
 
     renderGrid() {
         const grid = document.getElementById('torrent-grid');
+        const canSeeMagyarTag = isAdmin() || is7777User();
         
         if (this.filteredTorrents.length === 0) {
             grid.innerHTML = `
@@ -174,12 +187,14 @@ class App {
             const dateStr = torrent.createdTime 
                 ? new Date(torrent.createdTime).toLocaleDateString('hu-HU')
                 : '';
+            const showMagyarBadge = torrent.isMagyar && canSeeMagyarTag;
 
             return `
                 <div class="torrent-card ll-frame" style="--card-index: ${index}" data-id="${torrent.id}">
                     <div class="ll-frame-chrome">
                         <span class="chrome-dots"><i></i><i></i><i></i></span>
                         <span class="chrome-title">${torrent.category.toUpperCase()} // ${dateStr || 'DENJI-T'}</span>
+                        ${showMagyarBadge ? `<span class="badge-magyar" style="margin-left: auto; margin-right: 6px;">🇭🇺 Magyar</span>` : ''}
                         ${isAdmin() ? `
                             <button class="card-edit-btn" onclick="event.stopPropagation(); app.openEditModal('${torrent.id}')" title="Szerkesztés">✏️</button>
                             <button class="card-delete-btn" onclick="event.stopPropagation(); app.confirmDelete('${torrent.id}', '${this.escapeHtml(torrent.title)}')" title="Törlés">🗑️</button>
@@ -596,8 +611,14 @@ class App {
             posterEl.classList.toggle('no-cover', !torrent.coverUrl);
         }
 
+        const canSeeMagyarTag = isAdmin() || is7777User();
+
         modal.querySelector('.detail-title').textContent = torrent.title;
-        modal.querySelector('.detail-category').innerHTML = `<span style="color: ${categoryInfo.color}">${categoryInfo.emoji} ${torrent.category}</span>`;
+        let catHTML = `<span style="color: ${categoryInfo.color}">${categoryInfo.emoji} ${torrent.category}</span>`;
+        if (torrent.isMagyar && canSeeMagyarTag) {
+            catHTML += ` <span class="badge-magyar" style="margin-left: 8px;">🇭🇺 Magyar</span>`;
+        }
+        modal.querySelector('.detail-category').innerHTML = catHTML;
         modal.querySelector('.detail-date').textContent = dateStr;
 
         // Description
@@ -979,11 +1000,18 @@ class App {
         if (modal) modal.classList.remove('active');
     }
 
-    // Toggle film single-stream vs series seasons form
+    // Toggle film single-stream vs series seasons form + magyar option
     updateStreamFormByCategory() {
         const category = document.getElementById('add-category')?.value;
         const filmGroup = document.getElementById('film-stream-group');
         const seriesGroup = document.getElementById('series-stream-group');
+        const magyarGroup = document.getElementById('magyar-group');
+
+        // Magyar option only visible for Film or Sorozat
+        if (magyarGroup) {
+            magyarGroup.style.display = (category === 'Film' || category === 'Sorozat') ? 'block' : 'none';
+        }
+
         if (!filmGroup || !seriesGroup) return;
 
         if (category === 'Sorozat') {
@@ -1082,6 +1110,8 @@ class App {
         document.getElementById('edit-torrent-id').value = '';
         document.getElementById('add-modal-title').textContent = 'Új Torrent Hozzáadása';
         document.getElementById('add-submit-text').textContent = 'Torrent Feltöltése';
+        const magyarEl = document.getElementById('add-magyar');
+        if (magyarEl) magyarEl.checked = false;
         const editor = document.getElementById('seasons-editor');
         if (editor) editor.innerHTML = '';
         const dropText = document.querySelector('.drop-zone-text');
@@ -1103,6 +1133,9 @@ class App {
         document.getElementById('add-magnet').value = torrent.magnetLink || '';
         document.getElementById('add-download').value = torrent.downloadUrl || '';
         document.getElementById('add-description').value = torrent.description || '';
+        const magyarEl = document.getElementById('add-magyar');
+        if (magyarEl) magyarEl.checked = !!torrent.isMagyar;
+
         if (torrent.trailers && torrent.trailers.length) {
             document.getElementById('add-trailers').value = torrent.trailers.join('\n');
         }
@@ -1140,6 +1173,7 @@ class App {
         const coverFile = document.getElementById('cover-input').files[0];
         const torrentFile = document.getElementById('torrent-input').files[0];
         const description = document.getElementById('add-description').value.trim();
+        const isMagyar = (category === 'Film' || category === 'Sorozat') && (document.getElementById('add-magyar')?.checked || false);
         let seasons = null;
         if (category === 'Sorozat') {
             seasons = this.collectSeasonsFromForm();
@@ -1159,7 +1193,7 @@ class App {
             const payload = {
                 title, category, coverFile, magnetLink, torrentFile, description,
                 streamUrl: category === 'Sorozat' ? '' : streamUrl,
-                downloadUrl, trailers, seasons
+                downloadUrl, trailers, seasons, isMagyar
             };
 
             if (editId) {

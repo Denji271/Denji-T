@@ -150,6 +150,7 @@ class DriveAPI {
             trailers: [],
             episodes: null, // legacy flat: [{ ep: 1, url: '...' }]
             seasons: null,  // [{ season: 1, episodes: [{ ep: 1, url }] }]
+            isMagyar: false,
         };
 
         for (const file of files) {
@@ -273,7 +274,13 @@ class DriveAPI {
                     }
                 }).catch(() => {});
             }
-            // 8. Other text files (.txt)
+            // 8. Magyar tag (magyar.txt / is_magyar.txt)
+            // MUST be checked BEFORE the generic .txt handler below!
+            // Fájl megléte = Magyar, KIVÉVE ha a description explicit "false"/"0".
+            else if (nameLower === 'magyar.txt' || nameLower === 'is_magyar.txt') {
+                torrent.isMagyar = true;
+            }
+            // 9. Other text files (.txt) — magnet links etc.
             else if (nameLower.endsWith('.txt')) {
                 if (nameLower === 'magnet.txt' || nameLower.startsWith('magnet')) {
                     torrent.magnetFileId = file.id;
@@ -519,13 +526,19 @@ class DriveAPI {
     }
 
     // Add a new torrent: creates folder directly in root Drive folder + uploads files
-    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes }) {
+    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar }) {
         // Create the torrent folder directly inside the root Google Drive folder
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
         // Upload kategoria.txt
         if (category) {
             await this.uploadTextFile(category, folder.id, 'kategoria.txt', category);
+        }
+
+        // Magyar kapcsoló: csak BE állapotban hozunk létre magyar.txt-t.
+        // A fájl megléte = isMagyar true. Ha nincs fájl = false.
+        if (isMagyar === true) {
+            await this.uploadTextFile('true', folder.id, 'magyar.txt', 'true');
         }
 
         // Upload cover image
@@ -626,7 +639,7 @@ class DriveAPI {
     }
 
     // Update an existing torrent (edit)
-    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes }) {
+    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar }) {
         const token = await this.getAccessToken();
 
         // Rename folder if title changed
@@ -643,6 +656,25 @@ class DriveAPI {
 
         if (category) {
             await this.upsertTextFile(folderId, 'kategoria.txt', category);
+        }
+
+        // Szerkesztéskor: BE → magyar.txt létrehozása, KI → magyar.txt törlése
+        if (isMagyar !== undefined && isMagyar !== null) {
+            const filesForMagyar = await this.listFiles(folderId);
+            const existingMagyar = filesForMagyar.find(f => {
+                const n = (f.name || '').toLowerCase();
+                return n === 'magyar.txt' || n === 'is_magyar.txt';
+            });
+            if (isMagyar === true) {
+                if (!existingMagyar) {
+                    await this.uploadTextFile('true', folderId, 'magyar.txt', 'true');
+                }
+            } else if (existingMagyar) {
+                await fetch(`https://www.googleapis.com/drive/v3/files/${existingMagyar.id}`, {
+                    method: 'DELETE',
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+            }
         }
 
         if (coverFile) {

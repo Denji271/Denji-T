@@ -30,8 +30,14 @@ function getPasscodes() {
             combined.push(item);
         }
     }
+    for (const item of combined) {
+        if (item.code.trim() === '7777') {
+            item.name = 'Anya';
+        }
+    }
     if (combined.length === 0) {
         combined.push({ id: '1', name: 'Barát', code: '7788', role: 'guest' });
+        combined.push({ id: '2', name: 'Anya', code: '7777', role: 'guest' });
     }
     return combined;
 }
@@ -84,7 +90,7 @@ function loginWithPasscode(code) {
     const passcodes = getPasscodes();
     const found = passcodes.find(p => p.code.trim() === cleanCode);
     if (found) {
-        const user = { username: found.name, displayName: found.name, role: found.role || 'guest' };
+        const user = { username: found.name, displayName: found.name, role: found.role || 'guest', code: cleanCode };
         sessionStorage.setItem('denjit_user', JSON.stringify(user));
         return { success: true, user };
     }
@@ -117,6 +123,19 @@ function isLoggedIn() {
 function isAdmin() {
     const user = getCurrentUser();
     return user && user.role === 'admin';
+}
+
+// Check if logged in user is 7777 passcode user (Anya)
+function is7777User() {
+    const user = getCurrentUser();
+    if (!user) return false;
+    return (
+        user.code === '7777' ||
+        String(user.code) === '7777' ||
+        user.username === 'Anya' ||
+        user.displayName === 'Anya' ||
+        user.username === 'Magyar Barát'
+    );
 }
 
 // Logout
