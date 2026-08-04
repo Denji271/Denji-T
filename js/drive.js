@@ -150,7 +150,6 @@ class DriveAPI {
             trailers: [],
             episodes: null, // legacy flat: [{ ep: 1, url: '...' }]
             seasons: null,  // [{ season: 1, episodes: [{ ep: 1, url }] }]
-            subtitles: [],  // [{ id, name, lang }]
         };
 
         for (const file of files) {
@@ -166,17 +165,6 @@ class DriveAPI {
                 torrent.torrentFileId = file.id;
                 torrent.torrentFileName = file.name;
             }
-            // 2b. Subtitle files (.srt, .vtt, .ass)
-            else if (/\.(srt|vtt|ass|ssa)$/i.test(file.name)) {
-                let lang = '';
-                const m = file.name.match(/[.\-_](hu|hun|hungarian|en|eng|english|de|ger|german|ro|rom|romanian|es|spa|spanish|fr|fre|french|it|ita|italian|ru|rus|russian|pl|pol|polish|sk|slo|slovak|cz|cze|czech)[.\-_]/i);
-                if (m) {
-                    const code = m[1].toLowerCase();
-                    const map = { hu: 'HU', hun: 'HU', hungarian: 'HU', en: 'EN', eng: 'EN', english: 'EN', de: 'DE', ger: 'DE', german: 'DE', ro: 'RO', rom: 'RO', romanian: 'RO', es: 'ES', spa: 'ES', spanish: 'ES', fr: 'FR', fre: 'FR', french: 'FR', it: 'IT', ita: 'IT', italian: 'IT', ru: 'RU', rus: 'RU', russian: 'RU', pl: 'PL', pol: 'PL', polish: 'PL', sk: 'SK', slo: 'SK', slovak: 'SK', cz: 'CZ', cze: 'CZ', czech: 'CZ' };
-                    lang = map[code] || code.toUpperCase();
-                }
-                torrent.subtitles.push({ id: file.id, name: file.name, lang: lang || 'SUB' });
-            } 
             // 3. Category file (kategoria.txt)
             else if (nameLower === 'kategoria.txt' || nameLower === 'category.txt') {
                 if (file.description && file.description.trim()) {
@@ -531,7 +519,7 @@ class DriveAPI {
     }
 
     // Add a new torrent: creates folder directly in root Drive folder + uploads files
-    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, subtitleFiles }) {
+    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes }) {
         // Create the torrent folder directly inside the root Google Drive folder
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
 
@@ -597,15 +585,6 @@ class DriveAPI {
             await this.uploadFile(torrentFile, folder.id, torrentFile.name);
         }
 
-        // Upload subtitle files (.srt / .vtt / .ass) — no description (large SRT caused 400)
-        if (subtitleFiles && subtitleFiles.length) {
-            for (const sf of subtitleFiles) {
-                if (!sf) continue;
-                const safeName = sf.name.replace(/[^\w.\-()\[\]\s\u00C0-\u024F]/g, '_');
-                await this.uploadFile(sf, folder.id, safeName);
-            }
-        }
-
         // Upload leiras.txt
         if (description) {
             await this.uploadTextFile(description, folder.id, 'leiras.txt', description);
@@ -647,7 +626,7 @@ class DriveAPI {
     }
 
     // Update an existing torrent (edit)
-    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, subtitleFiles }) {
+    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes }) {
         const token = await this.getAccessToken();
 
         // Rename folder if title changed
@@ -722,14 +701,6 @@ class DriveAPI {
 
         if (torrentFile) {
             await this.uploadFile(torrentFile, folderId, torrentFile.name);
-        }
-
-        if (subtitleFiles && subtitleFiles.length) {
-            for (const sf of subtitleFiles) {
-                if (!sf) continue;
-                const safeName = sf.name.replace(/[^\w.\-()\[\]\s\u00C0-\u024F]/g, '_');
-                await this.uploadFile(sf, folderId, safeName);
-            }
         }
 
         if (description !== undefined && description !== null) {

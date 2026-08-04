@@ -418,7 +418,6 @@ input, textarea, select { font-family: inherit; outline: none; }
 .btn-download:hover { border-color: var(--success); color: var(--success); }
 .btn-magnet:hover { border-color: #f59e0b; color: #f59e0b; }
 .btn-torrent:hover { border-color: #38bdf8; color: #38bdf8; }
-.btn-subtitle:hover { border-color: #c084fc; color: #c084fc; }
 .btn-lg { padding: 12px 18px; font-size: 13px; }
 
 #add-torrent-fab {
@@ -534,22 +533,6 @@ body.admin-mode #add-torrent-fab { display: flex; }
 }
 .cinema-player-box video {
     object-fit: contain;
-}
-/* Custom subtitle (WebVTT) styling */
-.cinema-player-box video::cue {
-    background: transparent;
-    background-color: transparent;
-    color: #fff;
-    text-shadow:
-        0 0 4px rgba(0, 0, 0, 0.9),
-        1px 1px 2px rgba(0, 0, 0, 0.95),
-        -1px -1px 2px rgba(0, 0, 0, 0.7);
-    font-size: 0.85em;
-    line-height: 1.35;
-    font-weight: 500;
-}
-.cinema-player-box video::cue(b) {
-    font-weight: 700;
 }
 .cinema-placeholder {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
@@ -906,48 +889,6 @@ body.admin-mode .admin-only { display: inline-flex; }
     background: var(--accent-soft);
     border-color: var(--accent);
     color: var(--accent);
-}
-
-/* Subtitle track selector */
-.subtitle-track-selector {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 16px;
-    background: var(--bg-elevated);
-    border-bottom: 1px solid var(--border-subtle);
-    flex-wrap: wrap;
-}
-.subtitle-track-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted);
-    white-space: nowrap;
-}
-.subtitle-track-list {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-}
-.subtitle-track-btn {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-    padding: 6px 12px;
-    border-radius: var(--radius-pill);
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: var(--transition);
-}
-.subtitle-track-btn:hover {
-    border-color: #c084fc;
-    color: #c084fc;
-}
-.subtitle-track-btn.active {
-    background: rgba(192, 132, 252, 0.15);
-    border-color: #c084fc;
-    color: #c084fc;
 }
 
 /* RESPONSIVE */

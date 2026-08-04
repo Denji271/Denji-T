@@ -257,15 +257,6 @@
                         <textarea id="add-trailers" class="form-input form-textarea" rows="3" placeholder="Soronként egy YouTube link, pl.:\nhttps://www.youtube.com/watch?v=abc123\nhttps://youtu.be/xyz456"></textarea>
                     </div>
 
-                    <!-- Subtitle files -->
-                    <div class="form-group">
-                        <label for="subtitle-input" class="form-label">💬 Felirat fájlok (.srt / .vtt)</label>
-                        <div class="file-input-wrapper">
-                            <input type="file" id="subtitle-input" accept=".srt,.vtt,.ass,.ssa" class="form-file-input" multiple>
-                        </div>
-                        <p class="form-hint">A Streamtape beépített feliratai automatikusan megjelennek. Drive-ra feltöltött .srt fájlok letölthetők a lejátszónál.</p>
-                    </div>
-
                     <!-- Description -->
                     <div class="form-group">
                         <label for="add-description" class="form-label">Leírás</label>
@@ -373,12 +364,6 @@
                     <div class="series-episode-list" id="series-episode-list"></div>
                     <button type="button" class="series-ep-arrow series-ep-next" id="series-ep-next" title="Jobbra">›</button>
                 </div>
-            </div>
-
-            <!-- Subtitle track selector (native player) -->
-            <div id="subtitle-track-selector" class="subtitle-track-selector" style="display: none;">
-                <span class="subtitle-track-label">💬 Felirat:</span>
-                <div id="subtitle-track-list" class="subtitle-track-list"></div>
             </div>
 
             <!-- 3. Content Section: Title, Meta & Description -->
