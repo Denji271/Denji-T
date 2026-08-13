@@ -1,50 +1,1901 @@
+/**
+ * Denji-T · App
+ * Editorial index / galéria, takeover részletek, admin űrlapok, parancssáv.
+ */
+
+const KEY_FAVS = 'denjit_favs';
+const KEY_RECENT = 'denjit_recent';
+const KEY_WATCH = 'denjit_watch';
+
 class App {
     constructor() {
-        this.torrents = [];           // All loaded torrents
-        this.filteredTorrents = [];   // After search/filter
+        this.torrents = [];
+        this.filteredTorrents = [];
         this.currentFilters = {
             search: '',
-            categories: new Set(['Játék', 'Film', 'Sorozat']), // All selected by default
-            sort: 'name-asc'  // name-asc, name-desc, date-new, date-old
+            categories: new Set(['Játék', 'Film', 'Sorozat']),
+            sort: 'date-new',
+            view: 'all'
+        };
+        this.favs = new Set(Store.get(KEY_FAVS, []));
+        this.recent = Store.get(KEY_RECENT, []);
+        this.watch = Store.get(KEY_WATCH, {});
+        this.cmdkItems = [];
+        this.cmdkIndex = 0;
+    }
+
+    /* ============================================================
+       INDÍTÁS
+       ============================================================ */
+    async init() {
+        Prefs.load();
+        this.measureScrollbar();
+        window.addEventListener('resize', debounce(() => this.measureScrollbar(), 200));
+        this.bindEvents();
+
+        if (isLoggedIn()) this.showMainPage();
+        else this.showLoginPage();
+
+        try { await this.syncPasscodesFromDrive(); } catch (e) {}
+    }
+
+    showLoginPage() {
+        document.getElementById('login-page').classList.add('active');
+        document.getElementById('main-page').classList.remove('active');
+        document.body.style.overflow = '';
+        setTimeout(() => document.getElementById('passcode-input')?.focus({ preventScroll: true }), 400);
+    }
+
+    async showMainPage() {
+        document.getElementById('login-page').classList.remove('active');
+        document.getElementById('main-page').classList.add('active');
+        document.body.style.overflow = '';
+
+        const user = getCurrentUser();
+        const name = user ? (user.displayName || user.username) : '';
+        this.setText('user-greeting', name.toLowerCase());
+        this.setText('user-pop-role', isAdmin() ? 'adminisztrátor' : 'vendég');
+        this.setText('hero-eyebrow', isAdmin() ? 'Admin nézet' : 'Privát médiakönyvtár');
+
+        document.body.classList.toggle('admin-mode', isAdmin());
+        this.syncNavPlacement();
+        this.updateHeaderTone();
+
+        if (!CONFIG.GOOGLE_API_KEY) return this.showConfigWarning();
+
+        await this.loadTorrents();
+
+        if (isAdmin() && (CONFIG.GOOGLE_CLIENT_ID || localStorage.getItem('denjit_client_id'))) {
+            driveAPI.initOAuth();
+        }
+    }
+
+    setText(id, text) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = text;
+    }
+
+    // A teljes szélességű sávok pontos méretéhez kell a görgetősáv szélessége
+    measureScrollbar() {
+        const sbw = Math.max(0, window.innerWidth - document.documentElement.clientWidth);
+        document.documentElement.style.setProperty('--sbw', `${sbw}px`);
+    }
+
+    /* ============================================================
+       ADATBETÖLTÉS
+       ============================================================ */
+    async loadTorrents({ silent = false } = {}) {
+        const cached = this.torrents.length ? null : driveAPI.getPersistedTorrents();
+        if (cached && cached.length) {
+            this.torrents = cached;
+            this.applyFilters();
+            this.mountHeroWall();
+            this.setStatus(`Gyorsítótár · ${timeAgo(driveAPI.getPersistedAt())}`);
+        } else if (!silent) {
+            this.renderSkeletons();
+            this.setStatus('Betöltés…');
+        }
+
+        UI.progress(true);
+        try {
+            await driveAPI.init();
+            this.torrents = await driveAPI.loadAllTorrents();
+            this.applyFilters();
+            this.mountHeroWall();
+            this.setStatus(`Szinkronizálva · ${new Date().toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })}`);
+
+            clearTimeout(this._settleTimer);
+            this._settleTimer = setTimeout(() => {
+                driveAPI.persistTorrents(this.torrents);
+                if (!UI.anyModalOpen()) this.applyFilters();
+            }, 2600);
+        } catch (error) {
+            console.error('Failed to load torrents:', error);
+            if (!this.torrents.length) {
+                this.showError('Nem sikerült betölteni a könyvtárat. Ellenőrizd a kapcsolatot és a Drive beállításokat.');
+            } else {
+                UI.toast('A frissítés nem sikerült — a mentett lista látható.', 'error');
+            }
+            this.setStatus('Offline · mentett lista');
+        } finally {
+            UI.progress(false);
+        }
+    }
+
+    setStatus(text) {
+        this.setText('sync-line', text);
+        this.setText('foot-status', text);
+    }
+
+    showConfigWarning() {
+        document.getElementById('torrent-grid').innerHTML = `
+            <div class="state">
+                <h3 class="state-title">Konfiguráció szükséges</h3>
+                <p class="state-text">A Google Drive API használatához add meg az API kulcsot a <code>js/config.js</code> fájlban.</p>
+                <ol>
+                    <li>Hozz létre egy Google Cloud projektet</li>
+                    <li>Engedélyezd a Google Drive API-t</li>
+                    <li>Hozz létre egy API kulcsot</li>
+                    <li>Írd be a <code>CONFIG.GOOGLE_API_KEY</code> mezőbe</li>
+                </ol>
+            </div>`;
+    }
+
+    showError(message) {
+        document.getElementById('torrent-grid').innerHTML = `
+            <div class="state">
+                <h3 class="state-title">Valami félrement</h3>
+                <p class="state-text">${esc(message)}</p>
+                <button class="pill pill-light" data-state-act="retry">Újrapróbálás <span class="pill-arrow">→</span></button>
+            </div>`;
+    }
+
+    /* ============================================================
+       SZŰRÉS
+       ============================================================ */
+    applyFilters() {
+        let results = [...this.torrents];
+
+        const is7777 = is7777User();
+        if (is7777) results = results.filter(t => !!t.isMagyar);
+        else if (!isAdmin()) results = results.filter(t => !t.isMagyar);
+
+        if (this.currentFilters.view === 'fav') {
+            results = results.filter(t => this.favs.has(t.id));
+        } else if (this.currentFilters.view === 'recent') {
+            const order = new Map(this.recent.map((r, i) => [r.id, i]));
+            results = results.filter(t => order.has(t.id));
+            results.sort((a, b) => order.get(a.id) - order.get(b.id));
+        }
+
+        if (this.currentFilters.search) {
+            const q = this.currentFilters.search.toLowerCase().trim();
+            results = results.filter(t =>
+                t.title.toLowerCase().includes(q) || (t.description || '').toLowerCase().includes(q));
+        }
+
+        results = results.filter(t => this.currentFilters.categories.has(t.category));
+
+        if (this.currentFilters.view !== 'recent') {
+            switch (this.currentFilters.sort) {
+                case 'name-asc': results.sort((a, b) => a.title.localeCompare(b.title, 'hu')); break;
+                case 'name-desc': results.sort((a, b) => b.title.localeCompare(a.title, 'hu')); break;
+                case 'date-new': results.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime)); break;
+                case 'date-old': results.sort((a, b) => new Date(a.createdTime) - new Date(b.createdTime)); break;
+            }
+        }
+
+        this.filteredTorrents = results;
+        this.measureScrollbar();
+        this.renderGrid();
+        this.renderCounts();
+        this.renderHead();
+        this.renderContinue();
+    }
+
+    visibleLibrary() {
+        if (is7777User()) return this.torrents.filter(t => !!t.isMagyar);
+        if (!isAdmin()) return this.torrents.filter(t => !t.isMagyar);
+        return this.torrents;
+    }
+
+    renderCounts() {
+        const lib = this.visibleLibrary();
+        const set = (key, val) => document.querySelectorAll(`[data-count="${key}"]`).forEach(el => el.textContent = val);
+        set('all', lib.length);
+        set('fav', lib.filter(t => this.favs.has(t.id)).length);
+        set('recent', lib.filter(t => this.recent.some(r => r.id === t.id)).length);
+
+        const cats = ['Játék', 'Film', 'Sorozat'].map(c => `${c} ${lib.filter(t => t.category === c).length}`);
+        this.setText('hero-meta', `${lib.length} tartalom — ${cats.join(' · ')}`);
+    }
+
+    renderHead() {
+        const titles = { all: 'Teljes könyvtár', fav: 'Mentett tételek', recent: 'Folytatás' };
+        this.setText('page-title', titles[this.currentFilters.view] || 'Könyvtár');
+
+        const n = this.filteredTorrents.length;
+        const total = this.visibleLibrary().length;
+        this.setText('result-count', this.currentFilters.search
+            ? `${n} találat — „${this.currentFilters.search}”`
+            : `${n} tétel${n !== total ? ` / ${total}` : ''}`);
+
+        const wrap = document.getElementById('active-filters');
+        if (!wrap) return;
+        const pills = [];
+        if (this.currentFilters.search) {
+            pills.push(`<button class="tag-pill" data-clear="search">„${esc(this.currentFilters.search)}” ✕</button>`);
+        }
+        ['Játék', 'Film', 'Sorozat'].forEach(cat => {
+            if (!this.currentFilters.categories.has(cat)) {
+                pills.push(`<button class="tag-pill" data-clear="cat" data-cat="${cat}">${cat} rejtve ✕</button>`);
+            }
+        });
+        if (this.currentFilters.view !== 'all') {
+            pills.push(`<button class="tag-pill" data-clear="view">${titles[this.currentFilters.view]} ✕</button>`);
+        }
+        wrap.innerHTML = pills.join('');
+    }
+
+    /* ============================================================
+       RENDER
+       ============================================================ */
+    renderSkeletons(count = 8) {
+        document.getElementById('torrent-grid').innerHTML = Array.from({ length: count }, () => `
+            <div class="skel-row">
+                <div class="skel"></div>
+                <div class="skel tall"></div>
+                <div class="skel"></div>
+            </div>`).join('');
+    }
+
+    thumb(url, w = 420) {
+        if (!url) return '';
+        return url.includes('googleusercontent.com') ? `${url}=w${w}` : url;
+    }
+
+    playableInfo(t) {
+        const seasons = t.seasons?.length ? t.seasons : (t.episodes?.length ? [{ season: 1, episodes: t.episodes }] : null);
+        const epCount = seasons ? seasons.reduce((s, x) => s + (x.episodes?.length || 0), 0) : 0;
+        return { seasons, epCount, canStream: !!(t.streamUrl || epCount) };
+    }
+
+    renderGrid() {
+        const list = document.getElementById('torrent-grid');
+        list.dataset.layout = 'index';
+
+        const key = 'index|' + this.filteredTorrents.map(t => t.id).join('|');
+        const animate = key !== this._lastKey;
+        this._lastKey = key;
+
+        this.destroyWall();
+
+        if (!this.filteredTorrents.length) {
+            list.innerHTML = this.emptyState();
+            return;
+        }
+
+        list.innerHTML = this.filteredTorrents
+            .map((t, i) => this.rowHTML(t, i, animate))
+            .join('');
+
+        if (animate) this.observeReveals(list);
+    }
+
+    /* Beúszás görgetéskor — türelmes, 1.25s-es siklás */
+    observeReveals(scope) {
+        const targets = [...scope.querySelectorAll('.reveal:not(.in)')];
+        if (!targets.length) return;
+
+        if (Prefs.get('motion') === 'reduced' || typeof IntersectionObserver === 'undefined') {
+            targets.forEach(el => el.classList.add('in'));
+            return;
+        }
+
+        // Ami már látszik, azonnal megjelenik — csak a lentebbi elemek úsznak be
+        const pending = [];
+        targets.forEach(el => {
+            const rect = el.getBoundingClientRect();
+            if (rect.top < window.innerHeight * 0.92) el.classList.add('in');
+            else pending.push(el);
+        });
+        if (!pending.length) return;
+
+        this._revealObs?.disconnect();
+        this._revealObs = new IntersectionObserver((entries, obs) => {
+            entries.forEach(entry => {
+                if (!entry.isIntersecting) return;
+                entry.target.classList.add('in');
+                obs.unobserve(entry.target);
+            });
+        }, { rootMargin: '0px 0px -8% 0px', threshold: 0.02 });
+        pending.forEach(el => this._revealObs.observe(el));
+
+        // Biztonsági háló: ha az observer bármiért nem sülne el, semmi nem marad rejtve
+        clearTimeout(this._revealFallback);
+        this._revealFallback = setTimeout(() => this.revealInView(), 2000);
+    }
+
+    // Görgetéskori tartalék: ami a képernyőre ért, az mindenképp megjelenik
+    revealInView() {
+        const pending = document.querySelectorAll('.reveal:not(.in)');
+        if (!pending.length) return;
+        const limit = window.innerHeight * 0.95;
+        pending.forEach(el => {
+            if (el.getBoundingClientRect().top < limit) el.classList.add('in');
+        });
+    }
+
+    /* ---------- Fal nézet (DriftWall) ---------- */
+    wallItems() {
+        return this.filteredTorrents.map(t => ({
+            id: t.id,
+            title: t.title,
+            category: t.category,
+            year: yearOf(t.createdTime),
+            image: this.thumb(t.coverUrl, 400)
+        }));
+    }
+
+    renderWall() {
+        const list = document.getElementById('torrent-grid');
+        const narrow = window.matchMedia('(max-width: 760px)').matches;
+        const touch = window.matchMedia('(hover: none)').matches;
+
+        if (!document.getElementById('wall-canvas')) {
+            list.innerHTML = `
+                <div class="wall-stage">
+                    <div class="wall-canvas" id="wall-canvas"></div>
+                    <div class="wall-vignette"></div>
+                    <span class="label wall-count" id="wall-count"></span>
+                    <div class="wall-readout" id="wall-readout">
+                        <span class="label" id="wall-readout-kicker"></span>
+                        <h3 class="wall-title" id="wall-readout-title"></h3>
+                        <span class="label" id="wall-readout-meta"></span>
+                    </div>
+                    <span class="label wall-hint">Vidd a mutatót a falra · kattints a megnyitáshoz</span>
+                </div>`;
+            this.wall = null;
+        }
+
+        const canvas = document.getElementById('wall-canvas');
+        const items = this.wallItems();
+
+        if (!this.wall) {
+            this.wall = new DriftWall(canvas, {
+                items,
+                columns: 'auto',
+                overscan: narrow ? 3 : 4,
+                maxColumns: 11,
+                offsetX: -0.05,
+                tileWidth: narrow ? 132 : 208,
+                tileHeight: narrow ? 88 : 138,
+                gap: narrow ? 12 : 18,
+                radius: 0,
+                tilt: 15,
+                turn: -13,
+                perspective: narrow ? 900 : 1200,
+                depth: 120,
+                speed: narrow ? 30 : 40,
+                variance: 0.45,
+                parallax: narrow ? 0 : 0.6,
+                // érintésnél a megállított fal miatt pontosan oda koppint a felhasználó, ahová céloz
+                pauseOnHover: touch,
+                lift: 72,
+                fade: 0.62,
+                dim: 0.42,
+                grayscale: true,
+                overlayColor: '#000000',
+                onActive: (item) => this.updateWallReadout(item),
+                onSelect: (item) => item && this.openDetail(item.id)
+            });
+            this.wall.setReduced(Prefs.get('motion') === 'reduced');
+        } else {
+            this.wall.setItems(items);
+        }
+
+        this.setText('wall-count', `${items.length} tétel a falon`);
+    }
+
+    updateWallReadout(item) {
+        const box = document.getElementById('wall-readout');
+        if (!box) return;
+        if (!item) {
+            box.classList.remove('on');
+            return;
+        }
+        const index = this.filteredTorrents.findIndex(t => t.id === item.id);
+        this.setText('wall-readout-kicker', `${String(index + 1).padStart(2, '0')} / ${String(this.filteredTorrents.length).padStart(2, '0')}`);
+        this.setText('wall-readout-title', item.title);
+        this.setText('wall-readout-meta', [item.category, item.year].filter(Boolean).join(' · '));
+        box.classList.add('on');
+    }
+
+    destroyWall() {
+        if (!this.wall) return;
+        this.wall.destroy();
+        this.wall = null;
+    }
+
+    /* ---------- Hero borítófal ---------- */
+    mountHeroWall() {
+        const el = document.getElementById('hero-wall');
+        if (!el || typeof DriftWall === 'undefined') return;
+
+        let items = this.visibleLibrary()
+            .filter(t => t.coverUrl)
+            .map(t => ({ id: t.id, title: t.title, image: this.thumb(t.coverUrl, 320) }));
+
+        // Fisher-Yates keverés — ne ismétlődjön kiszámíthatóan
+        for (let i = items.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [items[i], items[j]] = [items[j], items[i]];
+        }
+
+        if (items.length < 3) {
+            this.heroWall?.destroy();
+            this.heroWall = null;
+            el.replaceChildren();
+            return;
+        }
+
+        const narrow = window.matchMedia('(max-width: 760px)').matches;
+        if (!this.heroWall) {
+            this.heroWall = new DriftWall(el, {
+                items,
+                columns: 'auto',
+                // több oszlop + enyhe balra tolás, hogy a dőlés miatt bal oldalt se maradjon üres sáv
+                overscan: narrow ? 4 : 5,
+                maxColumns: 10,
+                offsetX: -0.09,
+                tileWidth: narrow ? 130 : 240,
+                tileHeight: narrow ? 86 : 158,
+                gap: narrow ? 12 : 18,
+                radius: 0,
+                tilt: 17,
+                turn: -15,
+                perspective: 1100,
+                depth: 150,
+                speed: narrow ? 18 : 26,
+                variance: 0.5,
+                parallax: narrow ? 0 : 0.35,
+                lift: 0,
+                fade: 0.7,
+                dim: 0.5,
+                grayscale: true,
+                overlayColor: '#000000',
+                interactive: false,
+                pointerTarget: document.querySelector('.hero')
+            });
+            this.heroWall.setReduced(Prefs.get('motion') === 'reduced');
+        } else {
+            this.heroWall.setItems(items);
+        }
+    }
+
+    marksHTML(t, info) {
+        const canSeeMagyar = isAdmin() || is7777User();
+        const marks = [];
+        if (t.isMagyar && canSeeMagyar) marks.push('<span class="mark">Magyar</span>');
+        if (info.epCount) marks.push(`<span class="mark">${info.seasons.length > 1 ? `${info.seasons.length} évad` : `${info.epCount} rész`}</span>`);
+        else if (t.streamUrl) marks.push('<span class="mark">Stream</span>');
+        if (this.favs.has(t.id)) marks.push('<span class="mark mark-solid">Mentve</span>');
+        return marks.join('');
+    }
+
+    actionsHTML(t, info) {
+        const acts = [];
+        if (info.canStream) acts.push('<button class="row-act" data-act="play">Lejátszás</button>');
+        if (t.downloadUrl) acts.push('<button class="row-act" data-act="download">Letöltés</button>');
+        if (t.magnetLink || t.magnetFileId) acts.push('<button class="row-act" data-act="magnet">Magnet</button>');
+        if (t.torrentFileId) acts.push('<button class="row-act" data-act="torrent">Torrent</button>');
+        acts.push(`<button class="row-act ${this.favs.has(t.id) ? 'is-on' : ''}" data-act="fav">${this.favs.has(t.id) ? 'Mentve' : 'Mentés'}</button>`);
+        if (isAdmin()) {
+            acts.push('<button class="row-act" data-act="edit">Szerk.</button>');
+            acts.push('<button class="row-act" data-act="delete">Törlés</button>');
+        }
+        return acts.join('');
+    }
+
+    rowHTML(t, i, animate = true) {
+        const info = this.playableInfo(t);
+        const progress = this.progressOf(t, info);
+        return `
+        <article class="row${animate ? ' reveal' : ''}" data-id="${t.id}" data-cover="${esc(this.thumb(t.coverUrl, 420))}" tabindex="0" style="--i:${Math.min(i, 30)}">
+            <span class="row-num">${String(i + 1).padStart(2, '0')}</span>
+            <h3 class="row-title">${esc(t.title)}</h3>
+            <div class="row-meta">
+                <span class="row-marks">${this.marksHTML(t, info)}</span>
+                <span class="row-cat">${esc(t.category)}</span>
+                <span class="row-date">${yearOf(t.createdTime)}</span>
+            </div>
+            <div class="row-actions">${this.actionsHTML(t, info)}</div>
+            ${progress ? `<span class="row-bar" style="width:${progress}%"></span>` : ''}
+        </article>`;
+    }
+
+    tileHTML(t, i, animate = true) {
+        const info = this.playableInfo(t);
+        const cover = this.thumb(t.coverUrl, 1200);
+        return `
+        <article class="tile${animate ? ' reveal' : ''}" data-id="${t.id}" tabindex="0" style="--i:${Math.min(i, 30)}">
+            <div class="tile-media">
+                ${cover
+                    ? `<img src="${esc(cover)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onload="this.classList.add('loaded')" onerror="this.remove()">`
+                    : '<span class="tile-empty">Nincs borító</span>'}
+            </div>
+            <div class="tile-foot">
+                <h3 class="tile-title">${esc(t.title)}</h3>
+                <div class="tile-meta">
+                    <span class="label">${esc(t.category)}</span>
+                    <span class="label">${yearOf(t.createdTime)}</span>
+                    <span class="row-marks">${this.marksHTML(t, info)}</span>
+                </div>
+            </div>
+            <div class="row-actions">${this.actionsHTML(t, info)}</div>
+        </article>`;
+    }
+
+    emptyState() {
+        const v = this.currentFilters.view;
+        if (v === 'fav') {
+            return `<div class="state">
+                <h3 class="state-title">Még nincs mentett tétel</h3>
+                <p class="state-text">Vidd az egeret egy sor fölé, és válaszd a „Mentés” gombot — itt gyűlnek össze.</p>
+                <button class="pill pill-light" data-state-act="all">Teljes könyvtár <span class="pill-arrow">→</span></button>
+            </div>`;
+        }
+        if (v === 'recent') {
+            return `<div class="state">
+                <h3 class="state-title">Nincs mit folytatni</h3>
+                <p class="state-text">Amit megnyitsz, itt jelenik meg — sorozatoknál a legutóbbi résszel együtt.</p>
+                <button class="pill pill-light" data-state-act="all">Teljes könyvtár <span class="pill-arrow">→</span></button>
+            </div>`;
+        }
+        return `<div class="state">
+            <h3 class="state-title">Nincs találat</h3>
+            <p class="state-text">Próbálj másik kifejezést, vagy kapcsold vissza a rejtett kategóriákat.</p>
+            <button class="pill pill-light" data-state-act="reset">Szűrők törlése <span class="pill-arrow">→</span></button>
+        </div>`;
+    }
+
+    renderContinue() {
+        const section = document.getElementById('continue-rail');
+        const track = document.getElementById('continue-track');
+        if (!section || !track) return;
+
+        const lib = this.visibleLibrary();
+        const items = this.recent
+            .map(r => lib.find(t => t.id === r.id))
+            .filter(Boolean)
+            .slice(0, 8);
+
+        const show = this.currentFilters.view === 'all' && !this.currentFilters.search && items.length >= 2;
+        section.hidden = !show;
+        if (!show) return;
+
+        track.innerHTML = items.map(t => {
+            const w = this.watch[t.id];
+            const rec = this.recent.find(r => r.id === t.id);
+            const percent = this.progressOf(t, this.playableInfo(t));
+            const resume = (w && w.s != null)
+                ? `${w.s + 1}. évad ${w.e + 1}. rész`
+                : 'Megnyitás';
+            return `
+                <article class="cont" data-id="${t.id}">
+                    <button class="cont-open" data-cont-act="open">
+                        <span class="label cont-cat">${esc(t.category)}</span>
+                        <span class="cont-name">${esc(t.title)}</span>
+                        <span class="cont-resume">${esc(resume)} <i>→</i></span>
+                        <span class="label cont-time">${rec ? timeAgo(rec.ts) : ''}</span>
+                    </button>
+                    <button class="cont-remove" data-cont-act="remove" title="Eltávolítás a listáról" aria-label="Eltávolítás">✕</button>
+                    ${percent ? `<span class="cont-bar"><i style="width:${percent}%"></i></span>` : ''}
+                </article>`;
+        }).join('');
+    }
+
+    removeRecent(id) {
+        const t = this.torrents.find(x => x.id === id);
+        this.recent = this.recent.filter(r => r.id !== id);
+        Store.set(KEY_RECENT, this.recent);
+        this.renderContinue();
+        this.renderCounts();
+        if (this.currentFilters.view === 'recent') this.applyFilters();
+        UI.toast(`Eltávolítva a folytatásból${t ? ` — ${t.title}` : ''}`, 'info', 2400);
+    }
+
+    /* ============================================================
+       ÁLLAPOTOK
+       ============================================================ */
+    toggleFav(id) {
+        const t = this.torrents.find(x => x.id === id);
+        const was = this.favs.has(id);
+        if (was) this.favs.delete(id); else this.favs.add(id);
+        Store.set(KEY_FAVS, [...this.favs]);
+        UI.toast(`${was ? 'Eltávolítva' : 'Mentve'}${t ? ` — ${t.title}` : ''}`, was ? 'info' : 'success', 2400);
+
+        if (this.currentFilters.view === 'fav') {
+            this.applyFilters();
+        } else {
+            document.querySelectorAll(`[data-id="${id}"] [data-act="fav"]`).forEach(btn => {
+                btn.classList.toggle('is-on', !was);
+                btn.textContent = was ? 'Mentés' : 'Mentve';
+            });
+            const marks = document.querySelector(`[data-id="${id}"] .row-marks`);
+            if (marks) {
+                const t2 = this.torrents.find(x => x.id === id);
+                if (t2) marks.innerHTML = this.marksHTML(t2, this.playableInfo(t2));
+            }
+            this.renderCounts();
+        }
+        const favBtn = document.getElementById('cinema-fav-btn');
+        if (favBtn && this.currentDetailId === id) favBtn.textContent = this.favs.has(id) ? 'mentve' : 'mentés';
+    }
+
+    pushRecent(id) {
+        this.recent = this.recent.filter(r => r.id !== id);
+        this.recent.unshift({ id, ts: Date.now() });
+        this.recent = this.recent.slice(0, 24);
+        Store.set(KEY_RECENT, this.recent);
+    }
+
+    markWatched(id, sIdx, eIdx) {
+        const entry = this.watch[id] || { eps: {} };
+        entry.s = sIdx;
+        entry.e = eIdx;
+        entry.eps[`${sIdx}-${eIdx}`] = 1;
+        entry.ts = Date.now();
+        this.watch[id] = entry;
+        Store.set(KEY_WATCH, this.watch);
+    }
+
+    progressOf(t, info) {
+        const w = this.watch[t.id];
+        if (!w || !info.epCount) return 0;
+        return Math.min(100, Math.round((Object.keys(w.eps || {}).length / info.epCount) * 100));
+    }
+
+    refreshRowState(id) {
+        const t = this.torrents.find(x => x.id === id);
+        const row = document.querySelector(`.row[data-id="${id}"]`);
+        if (!t || !row) return;
+        const percent = this.progressOf(t, this.playableInfo(t));
+        let bar = row.querySelector('.row-bar');
+        if (percent && !bar) {
+            bar = document.createElement('span');
+            bar.className = 'row-bar';
+            row.appendChild(bar);
+        }
+        if (bar) bar.style.width = `${percent}%`;
+    }
+
+    /* ============================================================
+       ESEMÉNYEK
+       ============================================================ */
+    bindEvents() {
+        /* --- Belépés --- */
+        document.querySelectorAll('.mode-link').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.mode-link').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.login-form').forEach(f => f.classList.remove('active'));
+                btn.classList.add('active');
+                const mode = btn.dataset.mode;
+                document.getElementById(mode === 'passcode' ? 'passcode-login-form' : 'login-form').classList.add('active');
+                document.getElementById(mode === 'passcode' ? 'passcode-input' : 'username-input')?.focus({ preventScroll: true });
+            });
+        });
+
+        document.querySelectorAll('.reveal').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const input = document.getElementById(btn.dataset.reveal);
+                if (!input) return;
+                const show = input.type === 'password';
+                input.type = show ? 'text' : 'password';
+                btn.classList.toggle('on', show);
+                btn.textContent = show ? 'rejtsd' : 'mutasd';
+                input.focus({ preventScroll: true });
+            });
+        });
+
+        const capsHint = document.getElementById('caps-hint');
+        document.querySelectorAll('#passcode-input, #password-input').forEach(inp => {
+            inp.addEventListener('keyup', (e) => {
+                if (capsHint && e.getModifierState) capsHint.hidden = !e.getModifierState('CapsLock');
+            });
+        });
+
+        document.getElementById('passcode-login-form')?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const res = loginWithPasscode(
+                document.getElementById('passcode-input').value,
+                document.getElementById('remember-me')?.checked
+            );
+            this.afterLogin(res, 'passcode-error');
+        });
+
+        document.getElementById('login-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('login-btn');
+            btn.disabled = true;
+            const res = await loginWithPassword(
+                document.getElementById('username-input').value,
+                document.getElementById('password-input').value,
+                document.getElementById('remember-me')?.checked
+            );
+            btn.disabled = false;
+            this.afterLogin(res, 'login-error');
+        });
+
+        document.getElementById('logout-btn')?.addEventListener('click', () => logout());
+
+        /* --- Navigáció --- */
+        document.getElementById('brand-home')?.addEventListener('click', () => {
+            this.setView('all');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        document.getElementById('refresh-btn')?.addEventListener('click', () => this.refresh());
+        document.getElementById('menu-refresh')?.addEventListener('click', () => { UI.closeAllPops(); this.refresh(); });
+        document.getElementById('cmdk-btn')?.addEventListener('click', () => this.openCmdk());
+        document.getElementById('user-chip')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            UI.togglePop(document.getElementById('user-pop'));
+        });
+        document.getElementById('mobile-menu-btn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            UI.togglePop(document.getElementById('user-pop'));
+        });
+
+
+
+        /* --- Szűrők --- */
+        document.getElementById('category-filters')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('.cat-link');
+            if (!btn) return;
+            const cat = btn.dataset.category;
+            if (this.currentFilters.categories.has(cat) && this.currentFilters.categories.size > 0) {
+                this.currentFilters.categories.delete(cat);
+                btn.classList.remove('active');
+            } else {
+                this.currentFilters.categories.add(cat);
+                btn.classList.add('active');
+            }
+            this.applyFilters();
+        });
+
+        document.querySelectorAll('#view-nav .ctrl-link').forEach(btn => {
+            btn.addEventListener('click', () => this.setView(btn.dataset.view));
+        });
+
+        const searchInput = document.getElementById('search-input');
+        const onSearch = debounce(() => {
+            this.currentFilters.search = searchInput.value;
+            this.applyFilters();
+        }, 140);
+        searchInput?.addEventListener('input', () => {
+            document.getElementById('search-clear').hidden = !searchInput.value;
+            onSearch();
+        });
+        document.getElementById('search-clear')?.addEventListener('click', () => {
+            searchInput.value = '';
+            document.getElementById('search-clear').hidden = true;
+            this.currentFilters.search = '';
+            this.applyFilters();
+            searchInput.focus();
+        });
+
+        document.getElementById('sort-select')?.addEventListener('change', (e) => {
+            this.currentFilters.sort = e.target.value;
+            this.applyFilters();
+        });
+
+        document.getElementById('active-filters')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-clear]');
+            if (!btn) return;
+            if (btn.dataset.clear === 'search') {
+                document.getElementById('search-input').value = '';
+                document.getElementById('search-clear').hidden = true;
+                this.currentFilters.search = '';
+                this.applyFilters();
+            } else if (btn.dataset.clear === 'cat') {
+                this.currentFilters.categories.add(btn.dataset.cat);
+                document.querySelector(`.cat-link[data-category="${btn.dataset.cat}"]`)?.classList.add('active');
+                this.applyFilters();
+            } else {
+                this.setView('all');
+            }
+        });
+
+        /* --- Lista --- */
+        const list = document.getElementById('torrent-grid');
+        list?.addEventListener('click', (e) => {
+            const stateBtn = e.target.closest('[data-state-act]');
+            if (stateBtn) {
+                const act = stateBtn.dataset.stateAct;
+                if (act === 'all') this.setView('all');
+                else if (act === 'reset') this.resetFilters();
+                else this.loadTorrents();
+                return;
+            }
+
+            const item = e.target.closest('.row, .tile');
+            if (!item) return;
+            const id = item.dataset.id;
+            const actBtn = e.target.closest('[data-act]');
+            if (!actBtn) return this.openDetail(id);
+
+            e.stopPropagation();
+            const t = this.torrents.find(x => x.id === id);
+            switch (actBtn.dataset.act) {
+                case 'fav': return this.toggleFav(id);
+                case 'play': return this.openDetail(id);
+                case 'download': return t?.downloadUrl && window.open(t.downloadUrl, '_blank', 'noopener');
+                case 'magnet': return this.openMagnet(id);
+                case 'torrent': return this.downloadTorrent(t.torrentFileId, t.torrentFileName);
+                case 'edit': return this.openEditModal(id);
+                case 'delete': return this.confirmDelete(id, t?.title || '');
+            }
+        });
+
+        list?.addEventListener('keydown', (e) => {
+            const item = e.target.closest('.row, .tile');
+            if (item && (e.key === 'Enter' || e.key === ' ')) {
+                e.preventDefault();
+                this.openDetail(item.dataset.id);
+            }
+        });
+
+        this.bindHoverPreview(list);
+
+        document.getElementById('continue-track')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-cont-act]');
+            const card = e.target.closest('.cont');
+            if (!btn || !card) return;
+            if (btn.dataset.contAct === 'remove') this.removeRecent(card.dataset.id);
+            else this.openDetail(card.dataset.id);
+        });
+        document.getElementById('clear-recent-btn')?.addEventListener('click', async () => {
+            const ok = await UI.confirm({
+                title: 'Előzmények törlése',
+                text: 'A „Folytatás” lista kiürül. A mentett tételek megmaradnak.',
+                okLabel: 'Törlés', kicker: 'Előzmények'
+            });
+            if (!ok) return;
+            this.recent = [];
+            Store.set(KEY_RECENT, []);
+            this.applyFilters();
+            UI.toast('Előzmények törölve.', 'success');
+        });
+
+        /* --- Takeover bezárás --- */
+        document.querySelectorAll('.modal-close').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const host = btn.closest('.takeover, .sheet');
+                if (!host) return;
+                if (host.id === 'detail-modal') this.closeDetail();
+                else if (host.id === 'stream-modal') this.closeStreamModal();
+                else UI.closeModal(host);
+            });
+        });
+
+        /* --- Admin --- */
+        document.getElementById('add-torrent-fab')?.addEventListener('click', () => this.openAddModal());
+        document.getElementById('add-category')?.addEventListener('change', () => this.updateStreamFormByCategory());
+        document.getElementById('add-season-btn')?.addEventListener('click', () => this.addSeasonBlock());
+        document.getElementById('add-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await this.handleAddTorrent();
+        });
+        document.getElementById('manage-passcodes-btn')?.addEventListener('click', () => {
+            UI.closeAllPops();
+            this.renderPasscodeList();
+            UI.openModal('passcode-modal');
+        });
+        document.getElementById('add-passcode-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('new-friend-name').value.trim();
+            const code = document.getElementById('new-friend-code').value.trim();
+            if (!name || !code) return;
+            addPasscode(name, code);
+            UI.toast(`Kód elmentve — ${name} · ${code}`, 'success');
+            e.target.reset();
+            this.renderPasscodeList();
+            await this.uploadPasscodesToDrive();
+        });
+        this.bindDropZone();
+
+        document.getElementById('next-episode-btn')?.addEventListener('click', () => this.playRelativeEpisode(1));
+
+        /* --- Görgetés --- */
+        const scrollTop = document.getElementById('scroll-top');
+        const progressBar = document.querySelector('#scroll-progress span');
+        window.addEventListener('scroll', () => {
+            scrollTop?.classList.toggle('on', window.scrollY > 700);
+            this.updateHeaderTone();
+            this.revealInView();
+            if (progressBar) {
+                const max = document.documentElement.scrollHeight - window.innerHeight;
+                progressBar.style.transform = `scaleX(${max > 0 ? Math.min(1, window.scrollY / max) : 0})`;
+            }
+        }, { passive: true });
+        scrollTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+        window.addEventListener('resize', debounce(() => this.syncNavPlacement(), 200));
+
+        // Teljes képernyős nézet alatt a borítófalat megállítjuk, a főoldalt elrejtjük, a csillagmező háttér fut tovább
+        document.addEventListener('ui:overlay', () => {
+            const takeoverActive = !!document.querySelector('.takeover.active');
+            document.body.classList.toggle('takeover-open', takeoverActive);
+            const covered = UI.anyModalOpen();
+            [this.wall, this.heroWall].forEach(w => {
+                if (!w) return;
+                if (covered) w.stop(); else w.start();
+            });
+        });
+
+        this.bindCmdk();
+        this.bindShortcuts();
+    }
+
+    afterLogin(res, errorId) {
+        const el = document.getElementById(errorId);
+        if (res.success) {
+            el.textContent = '';
+            this.showMainPage();
+            UI.toast(`Üdv, ${res.user.displayName || res.user.username}.`, 'success');
+        } else {
+            el.textContent = res.error;
+            el.classList.add('shake');
+            setTimeout(() => el.classList.remove('shake'), 700);
+        }
+    }
+
+    /* A kategóriaváltók mobilon a vezérlősorba költöznek */
+    syncNavPlacement() {
+        const nav = document.getElementById('category-filters');
+        const controls = document.querySelector('.controls');
+        const header = document.querySelector('#header .nav-left');
+        if (!nav || !controls) return;
+
+        const mobile = window.matchMedia('(max-width: 760px)').matches;
+        if (mobile && nav.parentElement !== controls) {
+            controls.insertBefore(nav, controls.firstChild);
+            nav.classList.add('control-group');
+        } else if (!mobile && nav.parentElement === controls) {
+            header.after(nav);
+            nav.classList.remove('control-group');
+        }
+    }
+
+    updateHeaderTone() {
+        const header = document.getElementById('header');
+        const hero = document.querySelector('.hero');
+        if (!header || !hero) return;
+        const past = window.scrollY > hero.offsetHeight - 90;
+        header.classList.toggle('on-paper', past);
+    }
+
+    setView(view) {
+        this.currentFilters.view = view;
+        document.querySelectorAll('#view-nav .ctrl-link').forEach(b => b.classList.toggle('active', b.dataset.view === view));
+        this.applyFilters();
+        UI.closeAllPops();
+    }
+
+    setLayout(layout) {
+        Prefs.set('layout', layout);
+        this.renderGrid();
+    }
+
+    resetFilters() {
+        this.currentFilters.search = '';
+        this.currentFilters.categories = new Set(['Játék', 'Film', 'Sorozat']);
+        this.currentFilters.view = 'all';
+        const s = document.getElementById('search-input');
+        if (s) s.value = '';
+        document.getElementById('search-clear').hidden = true;
+        document.querySelectorAll('.cat-link').forEach(b => b.classList.add('active'));
+        document.querySelectorAll('#view-nav .ctrl-link').forEach(b => b.classList.toggle('active', b.dataset.view === 'all'));
+        this.applyFilters();
+    }
+
+    async refresh() {
+        driveAPI.clearCache();
+        await this.loadTorrents({ silent: true });
+        UI.toast('Könyvtár frissítve.', 'success', 2400);
+    }
+
+    /* ============================================================
+       LEBEGŐ ELŐNÉZET (index nézet)
+       ============================================================ */
+    bindHoverPreview(list) {
+        const preview = document.getElementById('hover-preview');
+        if (!list || !preview) return;
+        const img = preview.querySelector('img');
+        let raf = null, x = 0, y = 0;
+
+        const move = () => {
+            raf = null;
+            preview.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%) scale(${preview.classList.contains('on') ? 1 : 0.94})`;
+        };
+
+        list.addEventListener('mousemove', (e) => {
+            if (!preview.classList.contains('on')) return;
+            const w = preview.offsetWidth || 300;
+            const h = preview.offsetHeight || 200;
+            const offset = w / 2 + 44;
+
+            // A jobb oldali sávban jelennek meg a művelet-linkek — ott balra ugrik az előnézet
+            x = e.clientX > window.innerWidth * 0.52 ? e.clientX - offset : e.clientX + offset;
+            x = Math.min(Math.max(x, w / 2 + 12), window.innerWidth - w / 2 - 12);
+            y = Math.min(Math.max(e.clientY, h / 2 + 12), window.innerHeight - h / 2 - 12);
+
+            if (!raf) raf = requestAnimationFrame(move);
+        });
+
+        list.addEventListener('mouseover', (e) => {
+            const row = e.target.closest('.row');
+            if (!row || Prefs.get('layout') !== 'index' || Prefs.get('motion') === 'reduced') return;
+            if (!window.matchMedia('(hover: hover)').matches) return;
+            const cover = row.dataset.cover;
+            if (!cover) { preview.classList.remove('on'); return; }
+            if (img.dataset.src !== cover) {
+                img.dataset.src = cover;
+                img.src = cover;
+                img.referrerPolicy = 'no-referrer';
+            }
+            preview.classList.add('on');
+        });
+
+        list.addEventListener('mouseleave', () => preview.classList.remove('on'));
+        list.addEventListener('mouseout', (e) => {
+            if (!e.relatedTarget || !e.relatedTarget.closest?.('.row')) preview.classList.remove('on');
+        });
+    }
+
+    /* ============================================================
+       GYORSBILLENTYŰK
+       ============================================================ */
+    /**
+     * Csak a legszükségesebb billentyűkezelés marad:
+     * Esc = bezárás, Ctrl/⌘+K = keresőpaletta, nyilak = rész léptetése a lejátszóban.
+     */
+    bindShortcuts() {
+        document.addEventListener('keydown', (e) => {
+            const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
+
+            if (e.key === 'Escape') {
+                if (document.getElementById('cmdk').classList.contains('active')) return this.closeCmdk();
+                const open = document.querySelector('.sheet.active, .takeover.active');
+                if (open) {
+                    if (open.id === 'detail-modal') this.closeDetail();
+                    else if (open.id === 'stream-modal') this.closeStreamModal();
+                    else UI.closeModal(open);
+                    return;
+                }
+                UI.closeAllPops();
+                return;
+            }
+
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+                e.preventDefault();
+                return this.openCmdk();
+            }
+
+            if (document.getElementById('detail-modal').classList.contains('active') && !typing) {
+                if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && this.currentSeasons) {
+                    e.preventDefault();
+                    this.playRelativeEpisode(e.key === 'ArrowRight' ? 1 : -1);
+                }
+            }
+        });
+    }
+
+    /* ============================================================
+       PARANCSSÁV
+       ============================================================ */
+    bindCmdk() {
+        const input = document.getElementById('cmdk-input');
+        const overlay = document.getElementById('cmdk');
+
+        overlay?.addEventListener('click', (e) => { if (e.target === overlay) this.closeCmdk(); });
+        input?.addEventListener('input', () => this.renderCmdk(input.value));
+        input?.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); this.moveCmdk(1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); this.moveCmdk(-1); }
+            else if (e.key === 'Enter') { e.preventDefault(); this.cmdkItems[this.cmdkIndex]?.run(); }
+        });
+        document.getElementById('cmdk-results')?.addEventListener('click', (e) => {
+            const item = e.target.closest('.cmdk-item');
+            if (item) this.cmdkItems[parseInt(item.dataset.idx, 10)]?.run();
+        });
+    }
+
+    openCmdk() {
+        const overlay = document.getElementById('cmdk');
+        overlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
+        const input = document.getElementById('cmdk-input');
+        input.value = '';
+        this.renderCmdk('');
+        setTimeout(() => input.focus(), 60);
+    }
+
+    closeCmdk() {
+        document.getElementById('cmdk').classList.remove('active');
+        if (!document.querySelector('.takeover.active, .sheet.active')) document.body.style.overflow = '';
+    }
+
+    moveCmdk(delta) {
+        if (!this.cmdkItems.length) return;
+        this.cmdkIndex = (this.cmdkIndex + delta + this.cmdkItems.length) % this.cmdkItems.length;
+        const results = document.getElementById('cmdk-results');
+        results.querySelectorAll('.cmdk-item').forEach((el, i) => el.classList.toggle('sel', i === this.cmdkIndex));
+        results.querySelector('.cmdk-item.sel')?.scrollIntoView({ block: 'nearest' });
+    }
+
+    renderCmdk(query) {
+        const q = (query || '').toLowerCase().trim();
+        const results = document.getElementById('cmdk-results');
+        this.cmdkItems = [];
+        let idx = 0;
+        let html = '';
+
+        const items = this.visibleLibrary()
+            .filter(t => !q || t.title.toLowerCase().includes(q))
+            .slice(0, q ? 20 : 6);
+
+        if (items.length) {
+            html += `<div class="cmdk-group"><span class="label">Tartalom</span></div>`;
+            html += items.map(t => {
+                this.cmdkItems.push({ run: () => { this.closeCmdk(); this.openDetail(t.id); } });
+                return `<button class="cmdk-item ${idx === 0 ? 'sel' : ''}" data-idx="${idx++}">
+                    <span>${esc(t.title)}</span>
+                    <span class="cmdk-sub">${esc(t.category)} ${yearOf(t.createdTime)}</span>
+                </button>`;
+            }).join('');
+        }
+
+        const actions = [
+            { title: 'Könyvtár frissítése', sub: '', run: () => { this.closeCmdk(); this.refresh(); } },
+            { title: 'Mentett tételek', sub: '', run: () => { this.closeCmdk(); this.setView('fav'); } },
+            { title: 'Folytatás', sub: '', run: () => { this.closeCmdk(); this.setView('recent'); } },
+            { title: 'Kijelentkezés', sub: '', run: () => logout() }
+        ];
+        if (isAdmin()) {
+            actions.unshift({ title: 'Új tartalom', sub: '', run: () => { this.closeCmdk(); this.openAddModal(); } });
+            actions.push({ title: 'Belépési kódok', sub: '', run: () => { this.closeCmdk(); this.renderPasscodeList(); UI.openModal('passcode-modal'); } });
+        }
+
+        const matched = actions.filter(a => !q || a.title.toLowerCase().includes(q));
+        if (matched.length) {
+            html += `<div class="cmdk-group"><span class="label">Parancsok</span></div>`;
+            html += matched.map(a => {
+                this.cmdkItems.push(a);
+                return `<button class="cmdk-item ${idx === 0 ? 'sel' : ''}" data-idx="${idx++}">
+                    <span>${esc(a.title)}</span>
+                    ${a.sub ? `<kbd>${esc(a.sub)}</kbd>` : ''}
+                </button>`;
+            }).join('');
+        }
+
+        this.cmdkIndex = 0;
+        results.innerHTML = html || `<div class="cmdk-empty">Nincs találat — „${esc(query)}”</div>`;
+    }
+
+    /* ============================================================
+       RÉSZLETEK (takeover)
+       ============================================================ */
+    openDetail(torrentId) {
+        const t = this.torrents.find(x => x.id === torrentId);
+        if (!t) return;
+
+        this.currentDetailId = torrentId;
+        this.currentTorrent = t;
+        this.pushRecent(torrentId);
+
+        const modal = document.getElementById('detail-modal');
+        const info = this.playableInfo(t);
+        const canSeeMagyar = isAdmin() || is7777User();
+
+        modal.querySelector('.detail-category').textContent = t.category;
+        modal.querySelector('.detail-date').textContent = formatDate(t.createdTime, true);
+        modal.querySelector('.detail-title').textContent = t.title;
+
+        const favBtn = document.getElementById('cinema-fav-btn');
+        if (favBtn) {
+            favBtn.textContent = this.favs.has(t.id) ? 'mentve' : 'mentés';
+            favBtn.onclick = () => this.toggleFav(t.id);
+        }
+
+        const badges = [];
+        if (t.isMagyar && canSeeMagyar) badges.push('<span class="mark">Magyar</span>');
+        if (info.seasons) badges.push(`<span class="mark">${info.seasons.length} évad · ${info.epCount} rész</span>`);
+        else if (t.streamUrl) badges.push('<span class="mark">Online nézhető</span>');
+        if (t.trailers?.length) badges.push(`<span class="mark">${t.trailers.length} trailer</span>`);
+        if (t.downloadUrl) badges.push('<span class="mark">Közvetlen letöltés</span>');
+        if (t.magnetLink || t.magnetFileId) badges.push('<span class="mark">Magnet</span>');
+        if (t.torrentFileId) badges.push('<span class="mark">Torrent fájl</span>');
+        document.getElementById('detail-badges').innerHTML = badges.join('') || '<span class="mark">Nincs extra adat</span>';
+
+        this.renderDescription(t, modal);
+
+        // Média lista
+        this.currentMediaList = [];
+        this.currentMediaIndex = 0;
+        this.currentSeasons = info.seasons;
+
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (placeholder) {
+            placeholder.style.backgroundImage = t.coverUrl ? `url('${this.thumb(t.coverUrl, 1200)}')` : '';
+            placeholder.dataset.empty = t.coverUrl ? '' : 'Nincs lejátszható tartalom';
+            placeholder.style.display = 'block';
+        }
+
+        const seriesSelector = document.getElementById('series-episode-selector');
+        if (info.seasons) {
+            const w = this.watch[t.id] || {};
+            const sIdx = Math.min(w.s ?? 0, info.seasons.length - 1);
+            const eIdx = Math.min(w.e ?? 0, info.seasons[sIdx].episodes.length - 1);
+            this.currentSeasonIndex = sIdx;
+            this.currentEpisodeIndex = eIdx;
+            const ep = info.seasons[sIdx].episodes[eIdx];
+            this.currentMediaList.push({ label: `S${info.seasons[sIdx].season}E${ep.ep}`, url: this.embedUrl(ep.url) });
+            this.markWatched(t.id, sIdx, eIdx);
+            if (seriesSelector) {
+                seriesSelector.style.display = 'block';
+                this.renderSeriesPlayer(t);
+            }
+        } else {
+            this.currentSeasonIndex = 0;
+            this.currentEpisodeIndex = 0;
+            if (seriesSelector) seriesSelector.style.display = 'none';
+            if (t.streamUrl) this.currentMediaList.push({ label: 'Film', url: this.embedUrl(t.streamUrl) });
+        }
+
+        (t.trailers || []).forEach((url, i) => {
+            const id = this.extractYouTubeId(url);
+            if (id) this.currentMediaList.push({
+                label: `Trailer ${t.trailers.length > 1 ? i + 1 : ''}`.trim(),
+                url: `https://www.youtube.com/embed/${id}`
+            });
+        });
+
+        this.renderMediaTabs();
+        this.updateStage();
+        this.renderDetailActions(t);
+
+        UI.openModal(modal);
+        this.renderContinue();
+    }
+
+    renderDescription(t, modal) {
+        const el = modal.querySelector('.detail-description');
+        if (!el) return;
+        if (t.description?.trim()) {
+            el.textContent = t.description.trim();
+        } else if (t.descriptionFileId) {
+            el.textContent = 'Leírás betöltése…';
+            driveAPI.readTextFile(t.descriptionFileId, t.title).then(text => {
+                if (this.currentDetailId !== t.id) return;
+                if (text?.trim()) {
+                    t.description = text.trim();
+                    el.textContent = t.description;
+                } else {
+                    el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
+                }
+            }).catch(() => {
+                if (this.currentDetailId === t.id) el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
+            });
+        } else {
+            el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
+        }
+    }
+
+    embedUrl(url) {
+        let u = (url || '').trim();
+        if (u.includes('streamtape.com/v/')) u = u.replace('streamtape.com/v/', 'streamtape.com/e/');
+        return u;
+    }
+
+    renderMediaTabs() {
+        const tabs = document.getElementById('cinema-server-tabs');
+        const stage = document.getElementById('cinema-hero-stage');
+        stage?.classList.toggle('multi', this.currentMediaList.length > 1);
+
+        if (!tabs) return;
+        if (this.currentMediaList.length < 2) {
+            tabs.innerHTML = '';
+            tabs.style.display = 'none';
+        } else {
+            tabs.style.display = 'flex';
+            tabs.innerHTML = this.currentMediaList.map((m, i) =>
+                `<button class="tab-link ${i === this.currentMediaIndex ? 'active' : ''}" data-index="${i}">${esc(m.label)}</button>`).join('');
+            tabs.querySelectorAll('.tab-link').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    this.currentMediaIndex = parseInt(btn.dataset.index, 10);
+                    this.updateStage();
+                });
+            });
+        }
+
+        const prev = document.getElementById('cinema-prev-btn');
+        const next = document.getElementById('cinema-next-btn');
+        if (prev) prev.onclick = () => { this.currentMediaIndex = (this.currentMediaIndex - 1 + this.currentMediaList.length) % this.currentMediaList.length; this.updateStage(); };
+        if (next) next.onclick = () => { this.currentMediaIndex = (this.currentMediaIndex + 1) % this.currentMediaList.length; this.updateStage(); };
+    }
+
+    updateStage() {
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (!this.currentMediaList.length) {
+            this.clearPlayers();
+            if (placeholder) placeholder.style.display = 'block';
+            return;
+        }
+        const item = this.currentMediaList[this.currentMediaIndex];
+        if (item?.url) this.playEmbed(item.url);
+        document.querySelectorAll('#cinema-server-tabs .tab-link').forEach((b, i) =>
+            b.classList.toggle('active', i === this.currentMediaIndex));
+    }
+
+    renderDetailActions(t) {
+        const el = document.querySelector('#detail-modal .detail-actions');
+        if (!el) return;
+        const parts = [];
+        if (t.downloadUrl) parts.push('<button class="pill pill-light" data-detail-act="download">Közvetlen letöltés <span class="pill-arrow">↓</span></button>');
+        if (t.magnetLink || t.magnetFileId) parts.push('<button class="pill pill-light" data-detail-act="magnet">Magnet megnyitása <span class="pill-arrow">→</span></button>');
+        if (t.torrentFileId) parts.push('<button class="pill pill-light" data-detail-act="torrent">Torrent fájl <span class="pill-arrow">↓</span></button>');
+        if (isAdmin()) parts.push('<button class="pill pill-light" data-detail-act="edit">Szerkesztés <span class="pill-arrow">→</span></button>');
+        el.innerHTML = parts.join('');
+        el.style.display = parts.length ? 'flex' : 'none';
+
+        el.onclick = (e) => {
+            const btn = e.target.closest('[data-detail-act]');
+            if (!btn) return;
+            switch (btn.dataset.detailAct) {
+                case 'download': window.open(t.downloadUrl, '_blank', 'noopener'); break;
+                case 'magnet': this.openMagnet(t.id); break;
+                case 'torrent': this.downloadTorrent(t.torrentFileId, t.torrentFileName); break;
+                case 'edit': this.openEditModal(t.id); break;
+            }
         };
     }
 
-    // Initialize the app
-    async init() {
-        // Load passcodes from Google Drive so friends on other devices can log in
-        try {
-            await this.syncPasscodesFromDrive();
-        } catch (e) {}
-
-        // Check login state
-        if (isLoggedIn()) {
-            this.showMainPage();
-        } else {
-            this.showLoginPage();
-        }
-        this.bindEvents();
+    closeDetail() {
+        const id = this.currentDetailId;
+        this.clearPlayers();
+        this.currentDetailId = null;
+        this.currentSeasons = null;
+        UI.closeModal('detail-modal');
+        if (id) this.refreshRowState(id);
+        this.renderCounts();
+        this.renderContinue();
     }
 
-    // Fetch passcodes from Google Drive root folder (reads file description metadata — no 403!)
+    clearPlayers() {
+        const iframe = document.getElementById('cinema-player-iframe');
+        const video = document.getElementById('cinema-player-video');
+        if (iframe) {
+            iframe.src = 'about:blank';
+            iframe.removeAttribute('src');
+            iframe.style.display = 'none';
+        }
+        if (video) {
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+            video.style.display = 'none';
+        }
+    }
+
+    playEmbed(url) {
+        const iframe = document.getElementById('cinema-player-iframe');
+        const video = document.getElementById('cinema-player-video');
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (video) {
+            video.pause();
+            video.removeAttribute('src');
+            video.style.display = 'none';
+        }
+        if (iframe) {
+            iframe.src = this.embedUrl(url);
+            iframe.style.display = 'block';
+        }
+        if (placeholder) placeholder.style.display = 'none';
+    }
+
+    /* ---- Sorozat ---- */
+    renderSeriesPlayer(t) {
+        const seasonTabs = document.getElementById('series-season-tabs');
+        const list = document.getElementById('series-episode-list');
+        const seasons = this.currentSeasons;
+        if (!list || !seasons) return;
+
+        const renderEps = (sIdx) => {
+            const season = seasons[sIdx];
+            if (!season) return;
+            const w = this.watch[t.id] || { eps: {} };
+            list.innerHTML = season.episodes.map((ep, i) => `
+                <button class="ep ${sIdx === this.currentSeasonIndex && i === this.currentEpisodeIndex ? 'active' : ''} ${w.eps?.[`${sIdx}-${i}`] ? 'watched' : ''}" data-idx="${i}">
+                    ${ep.ep}. rész
+                </button>`).join('');
+            list.querySelectorAll('.ep').forEach(btn =>
+                btn.addEventListener('click', () => this.playEpisode(sIdx, parseInt(btn.dataset.idx, 10))));
+            list.querySelector('.ep.active')?.scrollIntoView({ block: 'nearest', inline: 'center' });
+        };
+        this._renderEps = renderEps;
+
+        if (seasonTabs) {
+            if (seasons.length > 1) {
+                seasonTabs.style.display = 'flex';
+                seasonTabs.innerHTML = seasons.map((s, i) =>
+                    `<button class="tab-link ${i === this.currentSeasonIndex ? 'active' : ''}" data-sidx="${i}">${s.season}. évad</button>`).join('');
+                seasonTabs.querySelectorAll('.tab-link').forEach(btn =>
+                    btn.addEventListener('click', () => this.playEpisode(parseInt(btn.dataset.sidx, 10), 0)));
+            } else {
+                seasonTabs.style.display = 'none';
+                seasonTabs.innerHTML = '';
+            }
+        }
+
+        const prev = document.getElementById('series-ep-prev');
+        const next = document.getElementById('series-ep-next');
+        if (prev) prev.onclick = () => list.scrollBy({ left: -260, behavior: 'smooth' });
+        if (next) next.onclick = () => list.scrollBy({ left: 260, behavior: 'smooth' });
+
+        let down = false, startX = 0, scrollStart = 0;
+        list.onmousedown = (e) => { down = true; startX = e.pageX; scrollStart = list.scrollLeft; };
+        list.onmouseleave = list.onmouseup = () => { down = false; };
+        list.onmousemove = (e) => {
+            if (!down) return;
+            e.preventDefault();
+            list.scrollLeft = scrollStart - (e.pageX - startX);
+        };
+
+        renderEps(this.currentSeasonIndex);
+        this.updateNextEpisodeBtn();
+    }
+
+    playEpisode(sIdx, eIdx) {
+        const seasons = this.currentSeasons;
+        const t = this.currentTorrent;
+        if (!seasons || !t) return;
+        const season = seasons[sIdx];
+        const ep = season?.episodes?.[eIdx];
+        if (!ep) return;
+
+        this.currentSeasonIndex = sIdx;
+        this.currentEpisodeIndex = eIdx;
+        this.markWatched(t.id, sIdx, eIdx);
+
+        const trailers = this.currentMediaList.filter(m => m.label?.startsWith('Trailer'));
+        this.currentMediaList = [{ label: `S${season.season}E${ep.ep}`, url: this.embedUrl(ep.url) }, ...trailers];
+        this.currentMediaIndex = 0;
+
+        this.renderMediaTabs();
+        this.updateStage();
+        this._renderEps?.(sIdx);
+        this.updateNextEpisodeBtn();
+        document.querySelectorAll('#series-season-tabs .tab-link').forEach((b, i) => b.classList.toggle('active', i === sIdx));
+    }
+
+    playRelativeEpisode(delta) {
+        const seasons = this.currentSeasons;
+        if (!seasons) return;
+        let s = this.currentSeasonIndex;
+        let e = this.currentEpisodeIndex + delta;
+
+        while (e < 0) {
+            s--;
+            if (s < 0) return UI.toast('Ez az első rész.', 'info', 2000);
+            e += seasons[s].episodes.length;
+        }
+        while (e >= seasons[s].episodes.length) {
+            e -= seasons[s].episodes.length;
+            s++;
+            if (s >= seasons.length) return UI.toast('Ez volt az utolsó rész.', 'info', 2000);
+        }
+        this.playEpisode(s, e);
+    }
+
+    updateNextEpisodeBtn() {
+        const btn = document.getElementById('next-episode-btn');
+        if (!btn || !this.currentSeasons) return;
+        const season = this.currentSeasons[this.currentSeasonIndex];
+        btn.hidden = !((this.currentEpisodeIndex + 1 < season.episodes.length) ||
+                       (this.currentSeasonIndex + 1 < this.currentSeasons.length));
+    }
+
+    openStreamModal(idOrUrl) {
+        let url = '';
+        let title = 'Lejátszás';
+        if (typeof idOrUrl === 'string' && idOrUrl.startsWith('http')) {
+            url = idOrUrl;
+        } else {
+            const t = this.torrents.find(x => x.id === idOrUrl);
+            if (t) {
+                if (t.seasons?.length || t.episodes?.length) return this.openDetail(t.id);
+                title = t.title;
+                url = t.streamUrl || '';
+            }
+        }
+        if (!url) return UI.toast('Nincs elérhető stream link.', 'error');
+        this.setText('stream-modal-title', title);
+        document.getElementById('stream-player-iframe').src = this.embedUrl(url);
+        UI.openModal('stream-modal');
+    }
+
+    closeStreamModal() {
+        const iframe = document.getElementById('stream-player-iframe');
+        if (iframe) {
+            iframe.src = 'about:blank';
+            iframe.removeAttribute('src');
+        }
+        UI.closeModal('stream-modal');
+    }
+
+    /* ============================================================
+       LETÖLTÉS
+       ============================================================ */
+    async openMagnet(idOrLink) {
+        if (!idOrLink) return;
+        let magnet = '';
+        let torrent = null;
+
+        if (typeof idOrLink === 'string' && idOrLink.startsWith('magnet:?')) {
+            magnet = idOrLink.trim();
+        } else {
+            torrent = this.torrents.find(t => t.id === idOrLink);
+            magnet = torrent?.magnetLink || '';
+        }
+
+        if (!magnet && torrent?.magnetFileId) {
+            UI.toast('Magnet beolvasása…', 'info', 1800);
+            try {
+                const text = await driveAPI.readTextFile(torrent.magnetFileId, torrent.title);
+                if (text?.includes('magnet:?')) {
+                    const m = text.match(/magnet:\?xt=urn:[^\s"']+/i);
+                    magnet = m ? m[0] : text.trim();
+                    torrent.magnetLink = magnet;
+                }
+            } catch (e) {
+                console.error('Failed to fetch magnet:', e);
+            }
+        }
+
+        if (magnet.startsWith('magnet:?')) {
+            if (!magnet.toLowerCase().includes('&dn=') && torrent?.title) {
+                magnet += `&dn=${encodeURIComponent(torrent.title)}`;
+            }
+            window.location.href = magnet;
+            UI.toast('Magnet átadva a torrent kliensnek.', 'success', 2600);
+        } else {
+            UI.toast('Nem található érvényes magnet link.', 'error');
+        }
+    }
+
+    downloadTorrent(fileId, fileName) {
+        const a = document.createElement('a');
+        a.href = `https://drive.google.com/uc?id=${fileId}&export=download`;
+        a.download = fileName || 'download.torrent';
+        a.target = '_blank';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        UI.toast('Torrent letöltése elindult.', 'success', 2400);
+    }
+
+    extractYouTubeId(url) {
+        if (!url) return null;
+        const patterns = [
+            /(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
+            /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
+            /(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
+            /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/
+        ];
+        for (const p of patterns) {
+            const m = url.match(p);
+            if (m) return m[1];
+        }
+        return null;
+    }
+
+    /* ============================================================
+       ADMIN ŰRLAP
+       ============================================================ */
+    openAddModal() {
+        if (!isAdmin()) return;
+        this.resetAddForm();
+        UI.openModal('add-modal');
+        setTimeout(() => document.getElementById('add-title')?.focus({ preventScroll: true }), 120);
+    }
+
+    bindDropZone() {
+        const drop = document.getElementById('cover-drop-zone');
+        const input = document.getElementById('cover-input');
+        if (!drop || !input) return;
+
+        const preview = (file) => {
+            const box = document.getElementById('cover-preview');
+            if (!box || !file) return;
+            box.querySelector('img').src = URL.createObjectURL(file);
+            box.hidden = false;
+        };
+
+        ['dragover', 'dragenter'].forEach(ev =>
+            drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag-over'); }));
+        ['dragleave', 'dragend'].forEach(ev =>
+            drop.addEventListener(ev, () => drop.classList.remove('drag-over')));
+
+        drop.addEventListener('drop', (e) => {
+            e.preventDefault();
+            drop.classList.remove('drag-over');
+            const file = e.dataTransfer.files[0];
+            if (file?.type.startsWith('image/')) {
+                input.files = e.dataTransfer.files;
+                preview(file);
+            }
+        });
+        drop.addEventListener('click', () => input.click());
+        input.addEventListener('change', () => { if (input.files[0]) preview(input.files[0]); });
+    }
+
+    updateStreamFormByCategory() {
+        const category = document.getElementById('add-category')?.value;
+        const film = document.getElementById('film-stream-group');
+        const series = document.getElementById('series-stream-group');
+        const magyar = document.getElementById('magyar-group');
+
+        if (magyar) magyar.style.display = (category === 'Film' || category === 'Sorozat') ? 'inline-flex' : 'none';
+        if (!film || !series) return;
+
+        if (category === 'Sorozat') {
+            film.style.display = 'none';
+            series.style.display = 'block';
+            const editor = document.getElementById('seasons-editor');
+            if (editor && !editor.children.length) this.addSeasonBlock();
+        } else {
+            film.style.display = 'block';
+            series.style.display = 'none';
+        }
+    }
+
+    addSeasonBlock(episodes = null) {
+        const editor = document.getElementById('seasons-editor');
+        if (!editor) return;
+        const block = document.createElement('div');
+        block.className = 'season-block';
+        block.innerHTML = `
+            <div class="season-head">
+                <span class="label season-label">${editor.children.length + 1}. évad</span>
+                <button type="button" class="icon-x btn-remove-season" title="Évad törlése">✕</button>
+            </div>
+            <div class="episodes-editor"></div>
+            <button type="button" class="link-quiet btn-add-ep">+ rész hozzáadása</button>`;
+        editor.appendChild(block);
+
+        const list = block.querySelector('.episodes-editor');
+        if (episodes?.length) episodes.forEach(ep => this.addEpisodeRow(list, ep.url));
+        else this.addEpisodeRow(list);
+
+        block.querySelector('.btn-remove-season').addEventListener('click', () => {
+            block.remove();
+            document.querySelectorAll('#seasons-editor .season-label').forEach((l, i) => l.textContent = `${i + 1}. évad`);
+        });
+        block.querySelector('.btn-add-ep').addEventListener('click', () => {
+            this.addEpisodeRow(list)?.querySelector('.ep-url')?.focus();
+        });
+    }
+
+    addEpisodeRow(listEl, url = '') {
+        if (!listEl) return null;
+        const row = document.createElement('div');
+        row.className = 'ep-row';
+        row.innerHTML = `
+            <span class="ep-num">${String(listEl.children.length + 1).padStart(2, '0')}</span>
+            <input type="text" class="ep-url" placeholder="https://streamtape.com/v/…" value="${esc(url)}">
+            <button type="button" class="icon-x btn-remove-ep" title="Törlés">✕</button>`;
+        listEl.appendChild(row);
+        row.querySelector('.btn-remove-ep').addEventListener('click', () => {
+            row.remove();
+            listEl.querySelectorAll('.ep-row').forEach((r, i) =>
+                r.querySelector('.ep-num').textContent = String(i + 1).padStart(2, '0'));
+        });
+        return row;
+    }
+
+    collectSeasonsFromForm() {
+        const seasons = [];
+        document.querySelectorAll('#seasons-editor .season-block').forEach((block, sIdx) => {
+            const episodes = [];
+            block.querySelectorAll('.ep-row').forEach((row, eIdx) => {
+                const url = (row.querySelector('.ep-url')?.value || '').trim();
+                if (url) episodes.push({ ep: eIdx + 1, url });
+            });
+            if (episodes.length) seasons.push({ season: sIdx + 1, episodes });
+        });
+        return seasons;
+    }
+
+    resetAddForm() {
+        document.getElementById('add-form')?.reset();
+        document.getElementById('edit-torrent-id').value = '';
+        this.setText('add-modal-title', 'Új tartalom');
+        this.setText('add-submit-text', 'Feltöltés');
+        const editor = document.getElementById('seasons-editor');
+        if (editor) editor.innerHTML = '';
+        const preview = document.getElementById('cover-preview');
+        if (preview) preview.hidden = true;
+        this.updateStreamFormByCategory();
+    }
+
+    openEditModal(torrentId) {
+        const t = this.torrents.find(x => x.id === torrentId);
+        if (!t || !isAdmin()) return;
+
+        this.resetAddForm();
+        document.getElementById('edit-torrent-id').value = torrentId;
+        this.setText('add-modal-title', `Szerkesztés — ${t.title}`);
+        this.setText('add-submit-text', 'Mentés');
+
+        document.getElementById('add-title').value = t.title || '';
+        document.getElementById('add-category').value = t.category || '';
+        document.getElementById('add-magnet').value = t.magnetLink || '';
+        document.getElementById('add-download').value = t.downloadUrl || '';
+        document.getElementById('add-description').value = t.description || '';
+        document.getElementById('add-trailers').value = (t.trailers || []).join('\n');
+        const magyarEl = document.getElementById('add-magyar');
+        if (magyarEl) magyarEl.checked = !!t.isMagyar;
+
+        this.updateStreamFormByCategory();
+
+        if (t.category === 'Sorozat') {
+            const editor = document.getElementById('seasons-editor');
+            if (editor) editor.innerHTML = '';
+            if (t.seasons?.length) t.seasons.forEach(s => this.addSeasonBlock(s.episodes));
+            else if (t.episodes?.length) this.addSeasonBlock(t.episodes);
+            else this.addSeasonBlock();
+        } else if (t.streamUrl) {
+            document.getElementById('add-stream').value = t.streamUrl;
+        }
+
+        UI.closeModal('detail-modal');
+        UI.openModal('add-modal');
+    }
+
+    async handleAddTorrent() {
+        const editId = document.getElementById('edit-torrent-id')?.value || '';
+        const title = document.getElementById('add-title').value.trim();
+        const category = document.getElementById('add-category').value;
+        const magnetLink = document.getElementById('add-magnet').value.trim();
+        const streamUrl = document.getElementById('add-stream')?.value.trim() || '';
+        const downloadUrl = document.getElementById('add-download')?.value.trim() || '';
+        const trailersRaw = document.getElementById('add-trailers')?.value.trim() || '';
+        const trailers = trailersRaw ? trailersRaw.split('\n').map(u => u.trim()).filter(Boolean) : [];
+        const coverFile = document.getElementById('cover-input').files[0];
+        const torrentFile = document.getElementById('torrent-input').files[0];
+        const description = document.getElementById('add-description').value.trim();
+        const isMagyar = (category === 'Film' || category === 'Sorozat') && !!document.getElementById('add-magyar')?.checked;
+        const seasons = category === 'Sorozat' ? this.collectSeasonsFromForm() : null;
+
+        if (!title || !category) return UI.toast('A cím és a kategória kötelező.', 'error');
+
+        const btn = document.getElementById('add-submit-btn');
+        btn.disabled = true;
+        this.setText('add-submit-text', editId ? 'Mentés…' : 'Feltöltés…');
+        UI.progress(true);
+
+        try {
+            const payload = {
+                title, category, coverFile, magnetLink, torrentFile, description,
+                streamUrl: category === 'Sorozat' ? '' : streamUrl,
+                downloadUrl, trailers, seasons, isMagyar
+            };
+            if (editId) {
+                await driveAPI.updateTorrent(editId, payload);
+                UI.toast('Mentve.', 'success');
+            } else {
+                await driveAPI.addTorrent(payload);
+                UI.toast('Új tartalom hozzáadva.', 'success');
+            }
+            UI.closeModal('add-modal');
+            this.resetAddForm();
+            await this.loadTorrents({ silent: true });
+        } catch (error) {
+            console.error('Add/edit error:', error);
+            UI.toast(error.message || 'Hiba a mentés közben.', 'error', 5000);
+        } finally {
+            btn.disabled = false;
+            this.setText('add-submit-text', editId ? 'Mentés' : 'Feltöltés');
+            UI.progress(false);
+        }
+    }
+
+    async confirmDelete(torrentId, title) {
+        const ok = await UI.confirm({
+            title: 'Tartalom törlése',
+            text: `A(z) „${title}” mappa és minden fájlja véglegesen törlődik a Google Drive-ról.`,
+            okLabel: 'Végleges törlés',
+            kicker: 'Törlés'
+        });
+        if (!ok) return;
+        try {
+            UI.progress(true);
+            await driveAPI.deleteTorrent(torrentId);
+            UI.toast('Törölve.', 'success');
+            await this.loadTorrents({ silent: true });
+        } catch (error) {
+            console.error('Delete error:', error);
+            UI.toast('A törlés nem sikerült.', 'error');
+        } finally {
+            UI.progress(false);
+        }
+    }
+
+    /* ============================================================
+       BELÉPÉSI KÓDOK
+       ============================================================ */
+    renderPasscodeList() {
+        const listEl = document.getElementById('passcode-list');
+        if (!listEl) return;
+        const passcodes = getPasscodes();
+
+        if (!passcodes.length) {
+            listEl.innerHTML = `<p class="state-text">Még nincs mentett kód.</p>`;
+            return;
+        }
+        listEl.innerHTML = passcodes.map(p => `
+            <div class="code-item" data-id="${esc(p.id)}">
+                <span class="code-name">${esc(p.name)}</span>
+                <div class="tile-meta">
+                    <button class="code-value" data-pc-act="copy" title="Másolás">${esc(p.code)}</button>
+                    <button class="link-quiet" data-pc-act="delete">törlés</button>
+                </div>
+            </div>`).join('');
+
+        listEl.onclick = (e) => {
+            const btn = e.target.closest('[data-pc-act]');
+            if (!btn) return;
+            const row = btn.closest('.code-item');
+            if (btn.dataset.pcAct === 'copy') this.copyCode(row.querySelector('.code-value').textContent.trim());
+            else this.handleDeletePasscode(row.dataset.id);
+        };
+    }
+
+    copyCode(code) {
+        navigator.clipboard?.writeText(code)
+            .then(() => UI.toast(`Vágólapra másolva — ${code}`, 'success', 2200))
+            .catch(() => UI.toast('A másolás nem sikerült.', 'error'));
+    }
+
+    async handleDeletePasscode(id) {
+        const ok = await UI.confirm({
+            title: 'Kód törlése',
+            text: 'Ezzel a kóddal többé nem lehet belépni.',
+            okLabel: 'Törlés', kicker: 'Belépési kód'
+        });
+        if (!ok) return;
+        deletePasscode(id);
+        UI.toast('Kód törölve.', 'success');
+        this.renderPasscodeList();
+        await this.uploadPasscodesToDrive();
+    }
+
     async syncPasscodesFromDrive() {
         if (!CONFIG.GOOGLE_API_KEY || !CONFIG.DRIVE_ROOT_FOLDER_ID) return;
         try {
-            // Find passcodes.json in root folder — description field contains the passcode JSON
             const controller = new AbortController();
             const tid = setTimeout(() => controller.abort(), 3000);
-            const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id,description)`;
-            const searchRes = await fetch(searchUrl, { signal: controller.signal });
+            const url = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id,description)`;
+            const res = await fetch(url, { signal: controller.signal });
             clearTimeout(tid);
-            if (!searchRes.ok) return;
-            const searchData = await searchRes.json();
-            const files = searchData.files || [];
-            if (files.length === 0) return;
-
-            // Read passcodes from file description (metadata, not file content — works with API key!)
-            const desc = files[0].description;
+            if (!res.ok) return;
+            const data = await res.json();
+            const desc = data.files?.[0]?.description;
             if (desc && desc.trim().startsWith('[')) {
                 const passcodes = JSON.parse(desc.trim());
-                if (Array.isArray(passcodes) && passcodes.length > 0) {
+                if (Array.isArray(passcodes) && passcodes.length) {
                     localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
                 }
             }
@@ -53,1228 +1904,38 @@ class App {
         }
     }
 
-    showLoginPage() {
-        document.getElementById('login-page').classList.add('active');
-        document.getElementById('main-page').classList.remove('active');
-    }
-
-    async showMainPage() {
-        document.getElementById('login-page').classList.remove('active');
-        document.getElementById('main-page').classList.add('active');
-        
-        const user = getCurrentUser();
-        const greetingEl = document.getElementById('user-greeting');
-        if (greetingEl && user) {
-            greetingEl.textContent = user.displayName || user.username;
-        }
-
-        // Show admin UI elements if user is admin
-        if (isAdmin()) {
-            document.body.classList.add('admin-mode');
-            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'inline-flex');
-        } else {
-            document.body.classList.remove('admin-mode');
-            document.querySelectorAll('.admin-only').forEach(el => el.style.display = 'none');
-        }
-
-        // Check if API key is configured
-        if (!CONFIG.GOOGLE_API_KEY) {
-            this.showConfigWarning();
-            return;
-        }
-
-        // Load data
-        await this.loadTorrents();
-
-        // Initialize OAuth if admin and client ID is set
-        if (isAdmin() && (CONFIG.GOOGLE_CLIENT_ID || localStorage.getItem('denjit_client_id'))) {
-            driveAPI.initOAuth();
-        }
-    }
-
-    showConfigWarning() {
-        const grid = document.getElementById('torrent-grid');
-        grid.innerHTML = `
-            <div class="config-warning">
-                <div class="config-warning-icon">⚙️</div>
-                <h2>Konfiguráció szükséges</h2>
-                <p>A Google Drive API használatához add meg az API kulcsot a <code>js/config.js</code> fájlban.</p>
-                <ol>
-                    <li>Hozz létre egy Google Cloud projektet</li>
-                    <li>Engedélyezd a Google Drive API-t</li>
-                    <li>Hozz létre egy API kulcsot</li>
-                    <li>Írd be a <code>CONFIG.GOOGLE_API_KEY</code> mezőbe</li>
-                </ol>
-            </div>
-        `;
-    }
-
-    async loadTorrents() {
-        this.showLoading(true);
-        try {
-            await driveAPI.init();
-            this.torrents = await driveAPI.loadAllTorrents();
-            this.applyFilters();
-        } catch (error) {
-            console.error('Failed to load torrents:', error);
-            this.showError('Hiba történt az adatok betöltésekor. Ellenőrizd a Google Drive beállításokat.');
-        } finally {
-            this.showLoading(false);
-        }
-    }
-
-    applyFilters() {
-        let results = [...this.torrents];
-
-        // 7777 (Anya)  → CSAK a Magyar tartalmakat látja
-        // Többi vendég → a Magyar tartalmakat NEM látja
-        // Admin        → mindent lát
-        const is7777 = is7777User();
-        const admin = isAdmin();
-
-        if (is7777) {
-            results = results.filter(t => !!t.isMagyar);
-        } else if (!admin) {
-            results = results.filter(t => !t.isMagyar);
-        }
-
-        // Search filter
-        if (this.currentFilters.search) {
-            const query = this.currentFilters.search.toLowerCase();
-            results = results.filter(t => t.title.toLowerCase().includes(query));
-        }
-
-        // Category filter
-        results = results.filter(t => this.currentFilters.categories.has(t.category));
-
-        // Sort
-        switch (this.currentFilters.sort) {
-            case 'name-asc':
-                results.sort((a, b) => a.title.localeCompare(b.title, 'hu'));
-                break;
-            case 'name-desc':
-                results.sort((a, b) => b.title.localeCompare(a.title, 'hu'));
-                break;
-            case 'date-new':
-                results.sort((a, b) => new Date(b.createdTime) - new Date(a.createdTime));
-                break;
-            case 'date-old':
-                results.sort((a, b) => new Date(a.createdTime) - new Date(b.createdTime));
-                break;
-        }
-
-        this.filteredTorrents = results;
-        this.renderGrid();
-    }
-
-    renderGrid() {
-        const grid = document.getElementById('torrent-grid');
-        const canSeeMagyarTag = isAdmin() || is7777User();
-        
-        if (this.filteredTorrents.length === 0) {
-            grid.innerHTML = `
-                <div class="empty-state">
-                    <div class="empty-state-icon">🔍</div>
-                    <h3>Nincs találat</h3>
-                    <p>Próbálj más keresési feltételt vagy kategóriát.</p>
-                </div>
-            `;
-            return;
-        }
-
-        grid.innerHTML = this.filteredTorrents.map((torrent, index) => {
-            const categoryInfo = CONFIG.CATEGORIES[torrent.category] || { emoji: '📁', color: '#888' };
-            const dateStr = torrent.createdTime 
-                ? new Date(torrent.createdTime).toLocaleDateString('hu-HU')
-                : '';
-            const showMagyarBadge = torrent.isMagyar && canSeeMagyarTag;
-
-            return `
-                <div class="torrent-card ll-frame" style="--card-index: ${index}" data-id="${torrent.id}">
-                    <div class="ll-frame-chrome">
-                        <span class="chrome-dots"><i></i><i></i><i></i></span>
-                        <span class="chrome-title">${torrent.category.toUpperCase()} // ${dateStr || 'DENJI-T'}</span>
-                        ${showMagyarBadge ? `<span class="badge-magyar" style="margin-left: auto; margin-right: 6px;">🇭🇺 Magyar</span>` : ''}
-                        ${isAdmin() ? `
-                            <button class="card-edit-btn" onclick="event.stopPropagation(); app.openEditModal('${torrent.id}')" title="Szerkesztés">✏️</button>
-                            <button class="card-delete-btn" onclick="event.stopPropagation(); app.confirmDelete('${torrent.id}', '${this.escapeHtml(torrent.title)}')" title="Törlés">🗑️</button>
-                        ` : ''}
-                    </div>
-                    <div class="card-cover">
-                        ${torrent.coverUrl ? `<img src="${torrent.coverUrl}" referrerpolicy="no-referrer" class="card-cover-img" alt="${this.escapeHtml(torrent.title)}">` : `<div class="card-cover-placeholder">${categoryInfo.emoji}</div>`}
-                    </div>
-                    <div class="card-body">
-                        <h3 class="card-title" title="${this.escapeHtml(torrent.title)}">${torrent.title}</h3>
-                        <div class="card-actions">
-                            ${(torrent.streamUrl || (torrent.episodes && torrent.episodes.length) || (torrent.seasons && torrent.seasons.length)) ? `<button class="btn btn-stream" onclick="event.stopPropagation(); app.showDetailModal('${torrent.id}')">▶ Lejátszás</button>` : ''}
-                            ${torrent.downloadUrl ? `<button class="btn btn-download" onclick="event.stopPropagation(); window.open('${torrent.downloadUrl}', '_blank')">↓ Letöltés</button>` : ''}
-                            ${(torrent.magnetLink || torrent.magnetFileId) ? `<button class="btn btn-magnet" onclick="event.stopPropagation(); app.openMagnet('${torrent.id}')">🧲 Magnet</button>` : ''}
-                            ${torrent.torrentFileId ? `<button class="btn btn-torrent" onclick="event.stopPropagation(); app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent</button>` : ''}
-                        </div>
-                    </div>
-                </div>
-            `;
-        }).join('');
-    }
-
-    // Event bindings
-    bindEvents() {
-        // Login mode tabs (Passcode vs Admin)
-        document.querySelectorAll('.login-mode-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                document.querySelectorAll('.login-mode-btn').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.login-form-view').forEach(f => f.classList.remove('active'));
-                btn.classList.add('active');
-                const mode = btn.dataset.mode;
-                if (mode === 'passcode') {
-                    document.getElementById('passcode-login-form')?.classList.add('active');
-                } else {
-                    document.getElementById('login-form')?.classList.add('active');
-                }
-            });
-        });
-
-        // Passcode login form
-        const passcodeForm = document.getElementById('passcode-login-form');
-        if (passcodeForm) {
-            passcodeForm.addEventListener('submit', (e) => {
-                e.preventDefault();
-                const code = document.getElementById('passcode-input').value;
-                const errorEl = document.getElementById('passcode-error');
-                const res = loginWithPasscode(code);
-                if (res.success) {
-                    errorEl.textContent = '';
-                    this.showMainPage();
-                } else {
-                    errorEl.textContent = res.error;
-                    errorEl.classList.add('shake');
-                    setTimeout(() => errorEl.classList.remove('shake'), 600);
-                }
-            });
-        }
-
-        // Admin login form
-        const loginForm = document.getElementById('login-form');
-        if (loginForm) {
-            loginForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const username = document.getElementById('username-input').value;
-                const password = document.getElementById('password-input').value;
-                const errorEl = document.getElementById('login-error');
-                
-                const res = await loginWithPassword(username, password);
-                if (res.success) {
-                    errorEl.textContent = '';
-                    this.showMainPage();
-                } else {
-                    errorEl.textContent = res.error;
-                    errorEl.classList.add('shake');
-                    setTimeout(() => errorEl.classList.remove('shake'), 600);
-                }
-            });
-        }
-
-        // Logout
-        document.getElementById('logout-btn')?.addEventListener('click', logout);
-
-        // Search
-        document.getElementById('search-input')?.addEventListener('input', (e) => {
-            this.currentFilters.search = e.target.value;
-            this.applyFilters();
-        });
-
-        // Category filters
-        document.querySelectorAll('.category-checkbox').forEach(cb => {
-            cb.addEventListener('change', (e) => {
-                const category = e.target.dataset.category;
-                if (e.target.checked) {
-                    this.currentFilters.categories.add(category);
-                } else {
-                    this.currentFilters.categories.delete(category);
-                }
-                this.applyFilters();
-            });
-        });
-
-        // Sort
-        document.getElementById('sort-select')?.addEventListener('change', (e) => {
-            this.currentFilters.sort = e.target.value;
-            this.applyFilters();
-        });
-
-        // Add button
-        document.getElementById('add-torrent-fab')?.addEventListener('click', () => {
-            this.resetAddForm();
-            document.getElementById('add-modal').classList.add('active');
-            this.updateStreamFormByCategory();
-        });
-
-        // Category change → film vs series stream UI
-        document.getElementById('add-category')?.addEventListener('change', () => {
-            this.updateStreamFormByCategory();
-        });
-
-        // Add season button
-        document.getElementById('add-season-btn')?.addEventListener('click', () => {
-            this.addSeasonBlock();
-        });
-
-        // Open Drive button (simplified option)
-        document.getElementById('open-drive-btn')?.addEventListener('click', () => {
-            window.open(`https://drive.google.com/drive/folders/${CONFIG.DRIVE_ROOT_FOLDER_ID}`, '_blank');
-        });
-
-        // Manage passcodes button (admin)
-        document.getElementById('manage-passcodes-btn')?.addEventListener('click', () => {
-            this.renderPasscodeList();
-            document.getElementById('passcode-modal').classList.add('active');
-        });
-
-        // Add passcode form submission
-        document.getElementById('add-passcode-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const name = document.getElementById('new-friend-name').value.trim();
-            const code = document.getElementById('new-friend-code').value.trim();
-            if (name && code) {
-                addPasscode(name, code);
-                this.showToast(`Kód elmentve: ${name} (${code})`, 'success');
-                document.getElementById('add-passcode-form').reset();
-                this.renderPasscodeList();
-                // Sync to Drive so friends on other devices can log in
-                await this.uploadPasscodesToDrive();
-            }
-        });
-
-        const closeAllModals = () => {
-            document.querySelectorAll('.modal-overlay').forEach(modal => modal.classList.remove('active'));
-            this.clearCinemaPlayers();
-            const streamIframe = document.getElementById('stream-player-iframe');
-            if (streamIframe) streamIframe.src = '';
-        };
-
-        // Close modals on X button click OR backdrop overlay click
-        document.querySelectorAll('.modal-close').forEach(btn => {
-            btn.addEventListener('click', closeAllModals);
-        });
-
-        document.querySelectorAll('.modal-overlay').forEach(overlay => {
-            overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) {
-                    closeAllModals();
-                }
-            });
-        });
-
-        // Detail modal navigation tabs
-        document.addEventListener('click', (e) => {
-            const tabBtn = e.target.closest('.detail-nav-btn');
-            if (tabBtn) {
-                const targetTab = tabBtn.dataset.tab;
-                document.querySelectorAll('.detail-nav-btn').forEach(b => b.classList.remove('active'));
-                document.querySelectorAll('.detail-tab-content').forEach(c => c.classList.remove('active'));
-                tabBtn.classList.add('active');
-                document.getElementById(`tab-${targetTab}`)?.classList.add('active');
-            }
-        });
-
-        // Add form submission
-        document.getElementById('add-form')?.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            await this.handleAddTorrent();
-        });
-
-        // Torrent card click → detail modal
-        document.getElementById('torrent-grid')?.addEventListener('click', (e) => {
-            const card = e.target.closest('.torrent-card');
-            if (card && !e.target.closest('.btn') && !e.target.closest('.card-delete-btn') && !e.target.closest('.card-edit-btn')) {
-                const torrentId = card.dataset.id;
-                this.showDetailModal(torrentId);
-            }
-        });
-
-        // Cover image drag & drop
-        const dropZone = document.getElementById('cover-drop-zone');
-        if (dropZone) {
-            dropZone.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                dropZone.classList.add('drag-over');
-            });
-            dropZone.addEventListener('dragleave', () => {
-                dropZone.classList.remove('drag-over');
-            });
-            dropZone.addEventListener('drop', (e) => {
-                e.preventDefault();
-                dropZone.classList.remove('drag-over');
-                const file = e.dataTransfer.files[0];
-                if (file && file.type.startsWith('image/')) {
-                    document.getElementById('cover-input').files = e.dataTransfer.files;
-                    dropZone.querySelector('.drop-zone-text').textContent = file.name;
-                }
-            });
-            dropZone.addEventListener('click', () => {
-                document.getElementById('cover-input').click();
-            });
-            document.getElementById('cover-input')?.addEventListener('change', (e) => {
-                if (e.target.files[0]) {
-                    dropZone.querySelector('.drop-zone-text').textContent = e.target.files[0].name;
-                }
-            });
-        }
-
-        // Sidebar toggle (mobile)
-        document.getElementById('sidebar-toggle')?.addEventListener('click', () => {
-            document.getElementById('sidebar').classList.toggle('open');
-        });
-
-        // Refresh button
-        document.getElementById('refresh-btn')?.addEventListener('click', async () => {
-            driveAPI.clearCache();
-            await this.loadTorrents();
-            this.showToast('Adatok frissítve!');
-        });
-    }
-
-    renderPasscodeList() {
-        const listEl = document.getElementById('passcode-list');
-        if (!listEl) return;
-        const passcodes = getPasscodes();
-        if (passcodes.length === 0) {
-            listEl.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">Még nincs mentett kód.</p>';
-            return;
-        }
-        listEl.innerHTML = passcodes.map(p => `
-            <div class="passcode-item" style="display: flex; justify-content: space-between; align-items: center; background: var(--bg-input); padding: 10px 14px; border-radius: 10px; margin-bottom: 8px; border: 1px solid var(--border-subtle);">
-                <div>
-                    <strong style="color: var(--text); font-size: 14px;">${this.escapeHtml(p.name)}</strong>
-                    <span style="display: inline-block; margin-left: 8px; background: var(--accent-soft); color: var(--accent); padding: 2px 8px; border-radius: 6px; font-family: monospace; font-size: 13px; font-weight: 600;">${this.escapeHtml(p.code)}</span>
-                </div>
-                <button type="button" onclick="app.handleDeletePasscode('${p.id}')" class="btn-icon" style="color: #ef4444; width: 32px; height: 32px;" title="Kód törlése">🗑️</button>
-            </div>
-        `).join('');
-    }
-
-    async handleDeletePasscode(id) {
-        deletePasscode(id);
-        this.showToast('Kód törölve!', 'info');
-        this.renderPasscodeList();
-        // Sync to Drive so friends on other devices can log in
-        await this.uploadPasscodesToDrive();
-    }
-
-    // Upload passcodes.json to Google Drive (admin only, uses OAuth)
-    // Stores passcode JSON in file description (readable by API key) AND file content
     async uploadPasscodesToDrive() {
         if (!isAdmin()) return;
         try {
-            const passcodes = getPasscodes();
-            const content = JSON.stringify(passcodes);
-
+            const content = JSON.stringify(getPasscodes());
             const token = await driveAPI.getAccessToken();
-
-            // Check if passcodes.json already exists
             const searchUrl = `https://www.googleapis.com/drive/v3/files?q='${CONFIG.DRIVE_ROOT_FOLDER_ID}'+in+parents+and+name='passcodes.json'+and+trashed=false&key=${CONFIG.GOOGLE_API_KEY}&fields=files(id)`;
             const searchRes = await fetch(searchUrl);
             const searchData = await searchRes.json();
-            const existingFiles = searchData.files || [];
+            const existing = searchData.files || [];
 
-            if (existingFiles.length > 0) {
-                // Update existing file content AND description
-                const fileId = existingFiles[0].id;
-                // Update description (metadata) — this is what friends read via API key
-                await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+            if (existing.length) {
+                await fetch(`https://www.googleapis.com/drive/v3/files/${existing[0].id}`, {
                     method: 'PATCH',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'Content-Type': 'application/json'
-                    },
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({ description: content })
                 });
             } else {
-                // Create new file with description
                 await driveAPI.uploadTextFile(content, CONFIG.DRIVE_ROOT_FOLDER_ID, 'passcodes.json', content);
             }
-            this.showToast('Kódok szinkronizálva a Drive-ra!', 'success');
+            UI.toast('Kódok szinkronizálva a Drive-ra.', 'success');
         } catch (e) {
-            console.error('Failed to upload passcodes to Drive:', e);
-            this.showToast('Drive szinkronizálás sikertelen', 'error');
+            console.error('Failed to upload passcodes:', e);
+            UI.toast('A Drive szinkronizálás nem sikerült.', 'error');
         }
     }
 
-    // Open magnet link in desktop torrent app (Deluge, uTorrent, qBittorrent, etc.)
-    async openMagnet(torrentIdOrLink) {
-        if (!torrentIdOrLink) return;
-
-        let magnetUri = '';
-        let torrent = null;
-
-        if (typeof torrentIdOrLink === 'string' && torrentIdOrLink.startsWith('magnet:?')) {
-            magnetUri = torrentIdOrLink.trim();
-        } else {
-            torrent = this.torrents.find(t => t.id === torrentIdOrLink);
-            if (torrent) {
-                magnetUri = torrent.magnetLink || '';
-            }
-        }
-
-        // On-demand fetch via Google Drive API Key if not pre-loaded yet
-        if (!magnetUri && torrent && torrent.magnetFileId) {
-            this.showToast('Magnet link beolvasása...', 'info');
-            try {
-                const text = await driveAPI.readTextFile(torrent.magnetFileId, torrent.title);
-                if (text && text.includes('magnet:?')) {
-                    const match = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                    magnetUri = match ? match[0] : text.trim();
-                    torrent.magnetLink = magnetUri;
-                }
-            } catch (e) {
-                console.error('Failed to fetch magnet:', e);
-            }
-        }
-
-        if (magnetUri && magnetUri.startsWith('magnet:?')) {
-            if (!magnetUri.toLowerCase().includes('&dn=') && torrent && torrent.title) {
-                magnetUri += `&dn=${encodeURIComponent(torrent.title)}`;
-            }
-            // Trigger OS native protocol prompt ("Open deluge.exe?")
-            window.location.href = magnetUri;
-        } else {
-            this.showToast('Nem található érvényes magnet link!', 'error');
-        }
-    }
-
-    // Download torrent file
-    downloadTorrent(fileId, fileName) {
-        const url = `https://drive.google.com/uc?id=${fileId}&export=download`;
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = fileName;
-        a.target = '_blank';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-    }
-
-    clearCinemaPlayers() {
-        const iframe = document.getElementById('cinema-player-iframe');
-        const videoEl = document.getElementById('cinema-player-video');
-        if (iframe) {
-            iframe.src = '';
-            iframe.style.display = 'none';
-        }
-        if (videoEl) {
-            videoEl.pause();
-            videoEl.removeAttribute('src');
-            videoEl.load();
-            videoEl.style.display = 'none';
-        }
-    }
-
-    // Play Streamtape / YouTube in embed iframe
-    playEmbed(url) {
-        const iframe = document.getElementById('cinema-player-iframe');
-        const videoEl = document.getElementById('cinema-player-video');
-        const placeholder = document.getElementById('cinema-player-placeholder');
-        if (videoEl) {
-            videoEl.pause();
-            videoEl.removeAttribute('src');
-            videoEl.style.display = 'none';
-        }
-        if (iframe) {
-            let embed = url || '';
-            if (embed.includes('streamtape.com/v/')) embed = embed.replace('streamtape.com/v/', 'streamtape.com/e/');
-            iframe.src = embed;
-            iframe.style.display = 'block';
-        }
-        if (placeholder) placeholder.style.display = 'none';
-    }
-
-    // Show torrent detail modal (Carousel Player + Blueprint Layout)
-    showDetailModal(torrentId) {
-        const torrent = this.torrents.find(t => t.id === torrentId);
-        if (!torrent) return;
-        this.currentDetailId = torrentId;
-
-        const categoryInfo = CONFIG.CATEGORIES[torrent.category] || { emoji: '📁', color: '#888' };
-        const dateStr = torrent.createdTime 
-            ? new Date(torrent.createdTime).toLocaleDateString('hu-HU', { year: 'numeric', month: 'long', day: 'numeric' })
-            : '';
-
-        const modal = document.getElementById('detail-modal');
-        const iframe = document.getElementById('cinema-player-iframe');
-        const placeholder = document.getElementById('cinema-player-placeholder');
-        const coverEl = placeholder ? placeholder.querySelector('.detail-cover') : null;
-        const tabsEl = document.getElementById('cinema-server-tabs');
-
-        const posterEl = modal.querySelector('.blueprint-poster-col .detail-cover');
-        if (posterEl) {
-            posterEl.innerHTML = torrent.coverUrl ? `<img src="${torrent.coverUrl}" referrerpolicy="no-referrer" class="card-cover-img" alt="${this.escapeHtml(torrent.title)}">` : `<div class="card-cover-placeholder">${categoryInfo.emoji}</div>`;
-            posterEl.classList.toggle('no-cover', !torrent.coverUrl);
-        }
-
-        const canSeeMagyarTag = isAdmin() || is7777User();
-
-        modal.querySelector('.detail-title').textContent = torrent.title;
-        let catHTML = `<span style="color: ${categoryInfo.color}">${categoryInfo.emoji} ${torrent.category}</span>`;
-        if (torrent.isMagyar && canSeeMagyarTag) {
-            catHTML += ` <span class="badge-magyar" style="margin-left: 8px;">🇭🇺 Magyar</span>`;
-        }
-        modal.querySelector('.detail-category').innerHTML = catHTML;
-        modal.querySelector('.detail-date').textContent = dateStr;
-
-        // Description
-        const descContainer = modal.querySelector('.detail-description');
-        if (descContainer) {
-            if (torrent.description && torrent.description.trim()) {
-                descContainer.textContent = torrent.description.trim();
-            } else if (torrent.descriptionFileId) {
-                descContainer.textContent = 'Leírás betöltése...';
-                driveAPI.readTextFile(torrent.descriptionFileId, torrent.title).then(text => {
-                    if (text && text.trim()) {
-                        torrent.description = text.trim();
-                        if (this.currentDetailId === torrent.id) {
-                            descContainer.textContent = text.trim();
-                        }
-                    } else if (this.currentDetailId === torrent.id) {
-                        descContainer.textContent = 'Nincs leírás megadva.';
-                    }
-                }).catch(() => {
-                    if (this.currentDetailId === torrent.id) descContainer.textContent = 'Nincs leírás megadva.';
-                });
-            } else {
-                descContainer.textContent = 'Nincs leírás megadva.';
-            }
-        }
-
-        // Build Media Items List for Top Stage & Carousel
-        this.currentMediaList = [];
-        this.currentEpisodeIndex = 0;
-        this.currentSeasonIndex = 0;
-
-        // Normalize: seasons preferred, fallback to flat episodes as season 1
-        if ((!torrent.seasons || !torrent.seasons.length) && torrent.episodes && torrent.episodes.length) {
-            torrent.seasons = [{ season: 1, episodes: torrent.episodes }];
-        }
-
-        const seriesSelector = document.getElementById('series-episode-selector');
-        if (torrent.seasons && torrent.seasons.length > 0) {
-            const firstSeason = torrent.seasons[0];
-            const first = firstSeason.episodes && firstSeason.episodes[0];
-            if (first) {
-                let clean = first.url;
-                if (clean.includes('streamtape.com/v/')) clean = clean.replace('streamtape.com/v/', 'streamtape.com/e/');
-                this.currentMediaList.push({ type: 'iframe', label: `S${firstSeason.season}E${first.ep}`, url: clean });
-            }
-            if (seriesSelector) {
-                seriesSelector.style.display = 'block';
-                this.renderSeriesPlayer(torrent);
-            }
-        } else {
-            if (seriesSelector) seriesSelector.style.display = 'none';
-            if (torrent.streamUrl) {
-                let cleanStream = torrent.streamUrl;
-                if (cleanStream.includes('streamtape.com/v/')) cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
-                this.currentMediaList.push({ type: 'iframe', label: '📺 Streamtape', url: cleanStream });
-            }
-        }
-
-        if (torrent.trailers && torrent.trailers.length > 0) {
-            torrent.trailers.forEach((tUrl, idx) => {
-                const ytid = this.extractYouTubeId(tUrl);
-                if (ytid) {
-                    this.currentMediaList.push({ type: 'iframe', label: `🎥 Trailer #${idx + 1}`, url: `https://www.youtube.com/embed/${ytid}` });
-                }
-            });
-        }
-        this.currentMediaIndex = 0;
-
-        const updateStage = () => {
-            const prevBtn = document.getElementById('cinema-prev-btn');
-            const nextBtn = document.getElementById('cinema-next-btn');
-            const videoEl = document.getElementById('cinema-player-video');
-
-            if (!this.currentMediaList || this.currentMediaList.length === 0) {
-                this.clearCinemaPlayers();
-                if (placeholder) {
-                    placeholder.style.display = 'block';
-                    placeholder.innerHTML = torrent.coverUrl ? `
-                        <img src="${torrent.coverUrl}" referrerpolicy="no-referrer" style="width:100%; height:100%; object-fit:cover; display:block;" alt="${this.escapeHtml(torrent.title)}">
-                    ` : `<div class="card-cover-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;font-size:48px;opacity:0.3;color:#fff;">${categoryInfo.emoji}</div>`;
-                }
-                if (tabsEl) tabsEl.style.display = 'none';
-                if (prevBtn) prevBtn.style.display = 'none';
-                if (nextBtn) nextBtn.style.display = 'none';
-                return;
-            } else {
-                if (tabsEl) tabsEl.style.display = 'flex';
-                if (prevBtn) prevBtn.style.display = 'flex';
-                if (nextBtn) nextBtn.style.display = 'flex';
-            }
-
-            const activeItem = this.currentMediaList[this.currentMediaIndex];
-            if (placeholder) placeholder.style.display = 'none';
-
-            if (activeItem && activeItem.url) {
-                this.playEmbed(activeItem.url);
-            } else {
-                this.clearCinemaPlayers();
-                if (placeholder) {
-                    placeholder.style.display = 'block';
-                    placeholder.innerHTML = torrent.coverUrl ? `
-                        <img src="${torrent.coverUrl}" referrerpolicy="no-referrer" style="width:100%; height:100%; object-fit:cover; display:block;" alt="${this.escapeHtml(torrent.title)}">
-                    ` : '';
-                }
-            }
-
-            if (tabsEl) {
-                tabsEl.querySelectorAll('.cinema-tab-btn').forEach((btn, idx) => {
-                    btn.classList.toggle('active', idx === this.currentMediaIndex);
-                });
-            }
-        };
-
-        // Render Media Switcher Tabs below Stage
-        if (tabsEl) {
-            if (this.currentMediaList.length > 0) {
-                tabsEl.innerHTML = this.currentMediaList.map((m, idx) => `
-                    <button class="cinema-tab-btn ${idx === 0 ? 'active' : ''}" data-index="${idx}">
-                        ${m.label}
-                    </button>
-                `).join('');
-
-                tabsEl.querySelectorAll('.cinema-tab-btn').forEach(btn => {
-                    btn.addEventListener('click', (e) => {
-                        const target = e.target.closest('.cinema-tab-btn');
-                        if (target) {
-                            this.currentMediaIndex = parseInt(target.dataset.index, 10);
-                            updateStage();
-                        }
-                    });
-                });
-            } else {
-                tabsEl.innerHTML = '';
-            }
-        }
-
-        // Arrow Buttons
-        const prevBtn = document.getElementById('cinema-prev-btn');
-        const nextBtn = document.getElementById('cinema-next-btn');
-
-        if (prevBtn) {
-            prevBtn.onclick = (e) => {
-                e.stopPropagation();
-                if (this.currentMediaList.length > 0) {
-                    this.currentMediaIndex = (this.currentMediaIndex - 1 + this.currentMediaList.length) % this.currentMediaList.length;
-                    updateStage();
-                }
-            };
-        }
-
-        if (nextBtn) {
-            nextBtn.onclick = (e) => {
-                e.stopPropagation();
-                if (this.currentMediaList.length > 0) {
-                    this.currentMediaIndex = (this.currentMediaIndex + 1) % this.currentMediaList.length;
-                    updateStage();
-                }
-            };
-        }
-
-        updateStage();
-
-        // Render Bottom Download Options Grid (no Online Lejátszás — already playing above)
-        const actionsEl = modal.querySelector('.detail-actions');
-        if (actionsEl) {
-            actionsEl.innerHTML = '';
-            if (torrent.downloadUrl) {
-                actionsEl.innerHTML += `<button class="btn btn-download btn-lg" onclick="window.open('${torrent.downloadUrl}', '_blank')">⚡ Közvetlen Letöltés</button>`;
-            }
-            if (torrent.magnetLink || torrent.magnetFileId) {
-                actionsEl.innerHTML += `<button class="btn btn-magnet btn-lg" onclick="app.openMagnet('${torrent.id}')">🧲 Megnyitás Deluge-al</button>`;
-            }
-            if (torrent.torrentFileId) {
-                actionsEl.innerHTML += `<button class="btn btn-torrent btn-lg" onclick="app.downloadTorrent('${torrent.torrentFileId}', '${this.escapeHtml(torrent.torrentFileName)}')">📥 Torrent Fájl Letöltése</button>`;
-            }
-            // Hide the whole section if nothing to show
-            const section = modal.querySelector('.cinema-actions-section');
-            if (section) section.style.display = actionsEl.innerHTML.trim() ? '' : 'none';
-        }
-
-        modal.classList.add('active');
-    }
-
-    playStreamFromDetail(torrentId) {
-        const torrent = this.torrents.find(t => t.id === torrentId);
-        if (!torrent) return;
-        let cleanStream = '';
-        if (torrent.seasons && torrent.seasons.length) {
-            const s = torrent.seasons[this.currentSeasonIndex || 0] || torrent.seasons[0];
-            const ep = s?.episodes?.[this.currentEpisodeIndex || 0] || s?.episodes?.[0];
-            if (ep) cleanStream = ep.url;
-        } else if (torrent.episodes && torrent.episodes.length) {
-            const ep = torrent.episodes[this.currentEpisodeIndex || 0] || torrent.episodes[0];
-            if (ep) cleanStream = ep.url;
-        } else if (torrent.streamUrl) {
-            cleanStream = torrent.streamUrl;
-        }
-        if (!cleanStream) return;
-        if (cleanStream.includes('streamtape.com/v/')) cleanStream = cleanStream.replace('streamtape.com/v/', 'streamtape.com/e/');
-        const iframe = document.getElementById('cinema-player-iframe');
-        const placeholder = document.getElementById('cinema-player-placeholder');
-        if (iframe && placeholder) {
-            iframe.src = cleanStream;
-            iframe.style.display = 'block';
-            placeholder.style.display = 'none';
-        }
-    }
-
-    renderSeriesPlayer(torrent) {
-        const seasonTabs = document.getElementById('series-season-tabs');
-        const list = document.getElementById('series-episode-list');
-        const prevBtn = document.getElementById('series-ep-prev');
-        const nextBtn = document.getElementById('series-ep-next');
-        if (!list || !torrent.seasons) return;
-
-        const playEp = (sIdx, eIdx) => {
-            const season = torrent.seasons[sIdx];
-            const ep = season?.episodes?.[eIdx];
-            if (!ep) return;
-            this.currentSeasonIndex = sIdx;
-            this.currentEpisodeIndex = eIdx;
-
-            let clean = ep.url;
-            if (clean.includes('streamtape.com/v/')) clean = clean.replace('streamtape.com/v/', 'streamtape.com/e/');
-
-            const trailers = this.currentMediaList.filter(m => m.label && m.label.startsWith('🎥'));
-            this.currentMediaList = [{ type: 'iframe', label: `S${season.season}E${ep.ep}`, url: clean }, ...trailers];
-            this.currentMediaIndex = 0;
-
-            const placeholder = document.getElementById('cinema-player-placeholder');
-            this.playEmbed(clean);
-            if (placeholder) placeholder.style.display = 'none';
-
-            list.querySelectorAll('.series-episode-btn').forEach((b, i) => b.classList.toggle('active', i === eIdx));
-
-            const tabsEl = document.getElementById('cinema-server-tabs');
-            if (tabsEl) {
-                tabsEl.innerHTML = this.currentMediaList.map((m, i) => `
-                    <button class="cinema-tab-btn ${i === 0 ? 'active' : ''}" data-index="${i}">${m.label}</button>
-                `).join('');
-                tabsEl.querySelectorAll('.cinema-tab-btn').forEach(tbtn => {
-                    tbtn.addEventListener('click', (e) => {
-                        const t = e.target.closest('.cinema-tab-btn');
-                        if (!t) return;
-                        this.currentMediaIndex = parseInt(t.dataset.index, 10);
-                        const item = this.currentMediaList[this.currentMediaIndex];
-                        if (item && iframe) {
-                            iframe.src = item.url;
-                            iframe.style.display = 'block';
-                            if (placeholder) placeholder.style.display = 'none';
-                        }
-                        tabsEl.querySelectorAll('.cinema-tab-btn').forEach((b, i) => b.classList.toggle('active', i === this.currentMediaIndex));
-                    });
-                });
-            }
-        };
-
-        const renderEps = (sIdx) => {
-            const season = torrent.seasons[sIdx];
-            if (!season) return;
-            list.innerHTML = (season.episodes || []).map((ep, idx) => `
-                <button class="series-episode-btn ${sIdx === this.currentSeasonIndex && idx === this.currentEpisodeIndex ? 'active' : ''}" data-idx="${idx}">
-                    ${ep.ep}. rész
-                </button>
-            `).join('');
-            list.querySelectorAll('.series-episode-btn').forEach(btn => {
-                btn.addEventListener('click', () => playEp(sIdx, parseInt(btn.dataset.idx, 10)));
-            });
-            list.scrollLeft = 0;
-        };
-
-        // Season tabs (hide if only 1 season)
-        if (seasonTabs) {
-            if (torrent.seasons.length > 1) {
-                seasonTabs.style.display = 'flex';
-                seasonTabs.innerHTML = torrent.seasons.map((s, i) => `
-                    <button class="series-season-btn ${i === 0 ? 'active' : ''}" data-sidx="${i}">${s.season}. évad</button>
-                `).join('');
-                seasonTabs.querySelectorAll('.series-season-btn').forEach(btn => {
-                    btn.addEventListener('click', () => {
-                        const sIdx = parseInt(btn.dataset.sidx, 10);
-                        seasonTabs.querySelectorAll('.series-season-btn').forEach(b => b.classList.remove('active'));
-                        btn.classList.add('active');
-                        this.currentSeasonIndex = sIdx;
-                        this.currentEpisodeIndex = 0;
-                        renderEps(sIdx);
-                        playEp(sIdx, 0);
-                    });
-                });
-            } else {
-                seasonTabs.style.display = 'none';
-                seasonTabs.innerHTML = '';
-            }
-        }
-
-        // Horizontal arrows
-        if (prevBtn) prevBtn.onclick = () => { list.scrollBy({ left: -200, behavior: 'smooth' }); };
-        if (nextBtn) nextBtn.onclick = () => { list.scrollBy({ left: 200, behavior: 'smooth' }); };
-
-        // Drag-to-scroll (no visible scrollbar)
-        let isDown = false, startX = 0, scrollLeft = 0;
-        list.onmousedown = (e) => {
-            isDown = true;
-            startX = e.pageX - list.offsetLeft;
-            scrollLeft = list.scrollLeft;
-        };
-        list.onmouseleave = () => { isDown = false; };
-        list.onmouseup = () => { isDown = false; };
-        list.onmousemove = (e) => {
-            if (!isDown) return;
-            e.preventDefault();
-            const x = e.pageX - list.offsetLeft;
-            list.scrollLeft = scrollLeft - (x - startX);
-        };
-
-        renderEps(0);
-    }
-
-    // Extract YouTube video ID from various URL formats
-    extractYouTubeId(url) {
-        if (!url) return null;
-        const patterns = [
-            /(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
-            /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
-            /(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-            /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
-        ];
-        for (const pattern of patterns) {
-            const match = url.match(pattern);
-            if (match) return match[1];
-        }
-        return null;
-    }
-
-    // Open Streamtape video player modal
-    openStreamModal(torrentIdOrUrl) {
-        let streamUrl = '';
-        let title = '▶️ Online Lejátszás';
-
-        if (typeof torrentIdOrUrl === 'string' && torrentIdOrUrl.startsWith('http')) {
-            streamUrl = torrentIdOrUrl;
-        } else {
-            const torrent = this.torrents.find(t => t.id === torrentIdOrUrl);
-            if (torrent) {
-                title = `▶️ ${torrent.title}`;
-                // Series → open detail modal (episode picker)
-                if ((torrent.seasons && torrent.seasons.length) || (torrent.episodes && torrent.episodes.length)) {
-                    this.showDetailModal(torrent.id);
-                    return;
-                }
-                if (torrent.streamUrl) {
-                    streamUrl = torrent.streamUrl;
-                }
-            }
-        }
-
-        if (!streamUrl) {
-            this.showToast('Nincs elérhető stream link!', 'error');
-            return;
-        }
-
-        if (streamUrl.includes('streamtape.com/v/')) {
-            streamUrl = streamUrl.replace('streamtape.com/v/', 'streamtape.com/e/');
-        }
-
-        const modal = document.getElementById('stream-modal');
-        const iframe = document.getElementById('stream-player-iframe');
-        const titleEl = document.getElementById('stream-modal-title');
-
-        if (titleEl) titleEl.textContent = title;
-        if (iframe) iframe.src = streamUrl;
-        modal.classList.add('active');
-    }
-
-    closeStreamModal() {
-        const modal = document.getElementById('stream-modal');
-        const iframe = document.getElementById('stream-player-iframe');
-        if (iframe) iframe.src = '';
-        if (modal) modal.classList.remove('active');
-    }
-
-    // Toggle film single-stream vs series seasons form + magyar option
-    updateStreamFormByCategory() {
-        const category = document.getElementById('add-category')?.value;
-        const filmGroup = document.getElementById('film-stream-group');
-        const seriesGroup = document.getElementById('series-stream-group');
-        const magyarGroup = document.getElementById('magyar-group');
-
-        // Magyar option only visible for Film or Sorozat
-        if (magyarGroup) {
-            magyarGroup.style.display = (category === 'Film' || category === 'Sorozat') ? 'block' : 'none';
-        }
-
-        if (!filmGroup || !seriesGroup) return;
-
-        if (category === 'Sorozat') {
-            filmGroup.style.display = 'none';
-            seriesGroup.style.display = 'block';
-            const editor = document.getElementById('seasons-editor');
-            if (editor && editor.children.length === 0) {
-                this.addSeasonBlock();
-            }
-        } else {
-            filmGroup.style.display = 'block';
-            seriesGroup.style.display = 'none';
-        }
-    }
-
-    addSeasonBlock(episodes = null) {
-        const editor = document.getElementById('seasons-editor');
-        if (!editor) return;
-        const seasonNum = editor.children.length + 1;
-        const block = document.createElement('div');
-        block.className = 'season-block';
-        block.innerHTML = `
-            <div class="season-block-header">
-                <span class="season-label">${seasonNum}. évad</span>
-                <button type="button" class="btn-remove-season" title="Évad törlése">✕</button>
-            </div>
-            <div class="episodes-list-editor"></div>
-            <button type="button" class="btn-add-ep-in-season">+ Rész hozzáadása</button>
-        `;
-        editor.appendChild(block);
-
-        const list = block.querySelector('.episodes-list-editor');
-        if (episodes && episodes.length) {
-            episodes.forEach(ep => this.addEpisodeEditRow(list, ep.url));
-        } else {
-            this.addEpisodeEditRow(list);
-        }
-
-        block.querySelector('.btn-remove-season').addEventListener('click', () => {
-            block.remove();
-            this.renumberSeasonBlocks();
-        });
-        block.querySelector('.btn-add-ep-in-season').addEventListener('click', () => {
-            this.addEpisodeEditRow(list);
-        });
-    }
-
-    renumberSeasonBlocks() {
-        const editor = document.getElementById('seasons-editor');
-        if (!editor) return;
-        editor.querySelectorAll('.season-block').forEach((block, i) => {
-            const label = block.querySelector('.season-label');
-            if (label) label.textContent = `${i + 1}. évad`;
-        });
-    }
-
-    addEpisodeEditRow(listEl, url = '') {
-        if (!listEl) return;
-        const num = listEl.children.length + 1;
-        const row = document.createElement('div');
-        row.className = 'episode-edit-row';
-        row.innerHTML = `
-            <span class="ep-num">${num}</span>
-            <input type="text" class="ep-url" placeholder="https://streamtape.com/v/..." value="${this.escapeHtml(url)}">
-            <button type="button" class="btn-remove-ep" title="Törlés">✕</button>
-        `;
-        listEl.appendChild(row);
-        row.querySelector('.btn-remove-ep').addEventListener('click', () => {
-            row.remove();
-            listEl.querySelectorAll('.episode-edit-row').forEach((r, i) => {
-                const n = r.querySelector('.ep-num');
-                if (n) n.textContent = i + 1;
-            });
-        });
-    }
-
-    collectSeasonsFromForm() {
-        const editor = document.getElementById('seasons-editor');
-        if (!editor) return [];
-        const seasons = [];
-        editor.querySelectorAll('.season-block').forEach((block, sIdx) => {
-            const episodes = [];
-            block.querySelectorAll('.episode-edit-row').forEach((row, eIdx) => {
-                const url = (row.querySelector('.ep-url')?.value || '').trim();
-                if (url) episodes.push({ ep: eIdx + 1, url });
-            });
-            if (episodes.length) {
-                seasons.push({ season: sIdx + 1, episodes });
-            }
-        });
-        return seasons;
-    }
-
-    resetAddForm() {
-        document.getElementById('add-form')?.reset();
-        document.getElementById('edit-torrent-id').value = '';
-        document.getElementById('add-modal-title').textContent = 'Új Torrent Hozzáadása';
-        document.getElementById('add-submit-text').textContent = 'Torrent Feltöltése';
-        const magyarEl = document.getElementById('add-magyar');
-        if (magyarEl) magyarEl.checked = false;
-        const editor = document.getElementById('seasons-editor');
-        if (editor) editor.innerHTML = '';
-        const dropText = document.querySelector('.drop-zone-text');
-        if (dropText) dropText.textContent = 'Húzd ide a borítóképet vagy kattints';
-        this.updateStreamFormByCategory();
-    }
-
-    openEditModal(torrentId) {
-        const torrent = this.torrents.find(t => t.id === torrentId);
-        if (!torrent) return;
-
-        this.resetAddForm();
-        document.getElementById('edit-torrent-id').value = torrentId;
-        document.getElementById('add-modal-title').textContent = 'Szerkesztés: ' + torrent.title;
-        document.getElementById('add-submit-text').textContent = 'Mentés';
-
-        document.getElementById('add-title').value = torrent.title || '';
-        document.getElementById('add-category').value = torrent.category || '';
-        document.getElementById('add-magnet').value = torrent.magnetLink || '';
-        document.getElementById('add-download').value = torrent.downloadUrl || '';
-        document.getElementById('add-description').value = torrent.description || '';
-        const magyarEl = document.getElementById('add-magyar');
-        if (magyarEl) magyarEl.checked = !!torrent.isMagyar;
-
-        if (torrent.trailers && torrent.trailers.length) {
-            document.getElementById('add-trailers').value = torrent.trailers.join('\n');
-        }
-
-        this.updateStreamFormByCategory();
-
-        if (torrent.category === 'Sorozat') {
-            const editor = document.getElementById('seasons-editor');
-            if (editor) editor.innerHTML = '';
-            if (torrent.seasons && torrent.seasons.length) {
-                torrent.seasons.forEach(s => this.addSeasonBlock(s.episodes));
-            } else if (torrent.episodes && torrent.episodes.length) {
-                // Legacy flat episodes → one season
-                this.addSeasonBlock(torrent.episodes);
-            } else {
-                this.addSeasonBlock();
-            }
-        } else if (torrent.streamUrl) {
-            document.getElementById('add-stream').value = torrent.streamUrl;
-        }
-
-        document.getElementById('add-modal').classList.add('active');
-    }
-
-    // Handle add / edit torrent form
-    async handleAddTorrent() {
-        const editId = document.getElementById('edit-torrent-id')?.value || '';
-        const title = document.getElementById('add-title').value.trim();
-        const category = document.getElementById('add-category').value;
-        const magnetLink = document.getElementById('add-magnet').value.trim();
-        const streamUrl = document.getElementById('add-stream') ? document.getElementById('add-stream').value.trim() : '';
-        const downloadUrl = document.getElementById('add-download') ? document.getElementById('add-download').value.trim() : '';
-        const trailersRaw = document.getElementById('add-trailers') ? document.getElementById('add-trailers').value.trim() : '';
-        const trailers = trailersRaw ? trailersRaw.split('\n').map(u => u.trim()).filter(u => u) : [];
-        const coverFile = document.getElementById('cover-input').files[0];
-        const torrentFile = document.getElementById('torrent-input').files[0];
-        const description = document.getElementById('add-description').value.trim();
-        const isMagyar = (category === 'Film' || category === 'Sorozat') && (document.getElementById('add-magyar')?.checked || false);
-        let seasons = null;
-        if (category === 'Sorozat') {
-            seasons = this.collectSeasonsFromForm();
-        }
-
-        if (!title || !category) {
-            this.showToast('A cím és kategória kötelező!', 'error');
-            return;
-        }
-
-        const submitBtn = document.querySelector('#add-form .btn-submit');
-        const submitText = document.getElementById('add-submit-text');
-        submitBtn.disabled = true;
-        if (submitText) submitText.textContent = editId ? 'Mentés...' : 'Feltöltés...';
-
-        try {
-            const payload = {
-                title, category, coverFile, magnetLink, torrentFile, description,
-                streamUrl: category === 'Sorozat' ? '' : streamUrl,
-                downloadUrl, trailers, seasons, isMagyar
-            };
-
-            if (editId) {
-                await driveAPI.updateTorrent(editId, payload);
-                this.showToast('Sikeresen frissítve!', 'success');
-            } else {
-                await driveAPI.addTorrent(payload);
-                this.showToast('Sikeresen hozzáadva!', 'success');
-            }
-
-            document.getElementById('add-modal').classList.remove('active');
-            this.resetAddForm();
-            await this.loadTorrents();
-        } catch (error) {
-            console.error('Add/edit torrent error:', error);
-            this.showToast(error.message || 'Hiba történt!', 'error');
-        } finally {
-            submitBtn.disabled = false;
-            if (submitText) submitText.textContent = editId ? 'Mentés' : 'Torrent Feltöltése';
-        }
-    }
-
-    // Confirm delete
-    async confirmDelete(torrentId, title) {
-        if (confirm(`Biztosan törlöd: "${title}"?`)) {
-            try {
-                await driveAPI.deleteTorrent(torrentId);
-                this.showToast('Törölve!', 'success');
-                await this.loadTorrents();
-            } catch (error) {
-                console.error('Delete error:', error);
-                this.showToast('Hiba a törléskor!', 'error');
-            }
-        }
-    }
-
-    // Toast notification
-    showToast(message, type = 'info') {
-        const container = document.getElementById('toast-container') || (() => {
-            const el = document.createElement('div');
-            el.id = 'toast-container';
-            document.body.appendChild(el);
-            return el;
-        })();
-
-        const toast = document.createElement('div');
-        toast.className = `toast toast-${type}`;
-        toast.textContent = message;
-        container.appendChild(toast);
-
-        setTimeout(() => {
-            toast.classList.add('toast-exit');
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
-    }
-
-    showLoading(show) {
-        const spinner = document.getElementById('loading-spinner');
-        if (spinner) spinner.style.display = show ? 'flex' : 'none';
-    }
-
-    showError(message) {
-        const grid = document.getElementById('torrent-grid');
-        grid.innerHTML = `
-            <div class="error-state">
-                <div class="error-state-icon">⚠️</div>
-                <h3>Hiba</h3>
-                <p>${message}</p>
-                <button class="btn btn-magnet" onclick="app.loadTorrents()">Újrapróbálás</button>
-            </div>
-        `;
-    }
-
-    escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/[&<>"']/g, (m) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[m]));
-    }
+    /* Kompatibilitás */
+    showDetailModal(id) { this.openDetail(id); }
+    showToast(msg, type = 'info') { UI.toast(msg, type); }
+    showLoading(on) { UI.progress(on); }
 }
 
-// Initialize app
 const app = new App();
+window.app = app;
 document.addEventListener('DOMContentLoaded', () => app.init());

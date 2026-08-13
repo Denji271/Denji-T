@@ -1,7 +1,63 @@
+/**
+ * Korlátozott párhuzamosságú map — a Drive listázás így sokszor gyorsabb,
+ * de nem terheli túl az API-t. A sorrend megmarad.
+ */
+async function mapLimit(items, limit, worker) {
+    const results = new Array(items.length);
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (cursor < items.length) {
+            const index = cursor++;
+            try {
+                results[index] = await worker(items[index], index);
+            } catch (e) {
+                results[index] = null;
+            }
+        }
+    });
+    await Promise.all(runners);
+    return results;
+}
+
+const LIB_CACHE_KEY = 'denjit_library_v1';
+
 class DriveAPI {
     constructor() {
         this.cache = new Map();
         this.categoryFolderIds = {}; // Maps category name to folder ID
+    }
+
+    /* ---------- Tartós gyorsítótár (azonnali első megjelenítés) ---------- */
+    persistTorrents(torrents) {
+        try {
+            const slim = (torrents || []).map(t => ({
+                ...t,
+                description: t.description ? String(t.description).slice(0, 600) : t.description
+            }));
+            localStorage.setItem(LIB_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: slim }));
+        } catch (e) {
+            // Kvóta túllépés esetén egyszerűen kihagyjuk
+            console.warn('Library cache write skipped:', e.message);
+        }
+    }
+
+    getPersistedTorrents() {
+        try {
+            const raw = localStorage.getItem(LIB_CACHE_KEY);
+            if (!raw) return null;
+            const data = JSON.parse(raw);
+            return Array.isArray(data.items) ? data.items : null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    getPersistedAt() {
+        try {
+            return JSON.parse(localStorage.getItem(LIB_CACHE_KEY))?.ts || 0;
+        } catch (e) {
+            return 0;
+        }
     }
 
     // Get cached data or fetch fresh
@@ -314,28 +370,32 @@ class DriveAPI {
         return torrent;
     }
 
-    // Load ALL torrents from both Category folders and Root directory
+    // Load ALL torrents from both Category folders and Root directory (párhuzamosan)
     async loadAllTorrents() {
         return this.getCached('all_torrents', async () => {
-            const torrents = [];
             const rootFolders = await this.listFolders(CONFIG.DRIVE_ROOT_FOLDER_ID);
 
-            for (const folder of rootFolders) {
-                // Is this folder one of the known category folders (Játék, Film, Sorozat)?
-                if (CONFIG.CATEGORIES[folder.name]) {
-                    this.categoryFolderIds[folder.name] = folder.id;
-                    const torrentFolders = await this.listFolders(folder.id);
-                    for (const tFolder of torrentFolders) {
-                        const torrent = await this.processTorrentFolder(tFolder, folder.name);
-                        if (torrent) torrents.push(torrent);
-                    }
-                } else {
-                    // It's a torrent folder placed directly in the root directory!
-                    const torrent = await this.processTorrentFolder(folder, 'Játék');
-                    if (torrent) torrents.push(torrent);
-                }
-            }
+            const categoryFolders = rootFolders.filter(f => CONFIG.CATEGORIES[f.name]);
+            const looseFolders = rootFolders.filter(f => !CONFIG.CATEGORIES[f.name]);
+            categoryFolders.forEach(f => { this.categoryFolderIds[f.name] = f.id; });
 
+            // Kategória-mappák tartalmának listázása egyszerre
+            const subLists = await Promise.all(categoryFolders.map(async (f) => ({
+                category: f.name,
+                folders: await this.listFolders(f.id).catch(() => [])
+            })));
+
+            const jobs = [];
+            subLists.forEach(({ category, folders }) =>
+                folders.forEach(folder => jobs.push({ folder, category })));
+            // Gyökérben álló mappák = külön torrentek
+            looseFolders.forEach(folder => jobs.push({ folder, category: 'Játék' }));
+
+            const processed = await mapLimit(jobs, 8, (job) =>
+                this.processTorrentFolder(job.folder, job.category));
+
+            const torrents = processed.filter(Boolean);
+            this.persistTorrents(torrents);
             return torrents;
         });
     }

@@ -69,13 +69,24 @@ function deletePasscode(id) {
     return passcodes;
 }
 
+// Store the session — "remember" esetén az eszközön is megmarad
+function saveSession(user, remember) {
+    const data = JSON.stringify(user);
+    sessionStorage.setItem('denjit_user', data);
+    if (remember) {
+        localStorage.setItem('denjit_user', data);
+    } else {
+        localStorage.removeItem('denjit_user');
+    }
+}
+
 // Login with Admin Username + Password
-async function loginWithPassword(username, password) {
+async function loginWithPassword(username, password, remember = false) {
     if (username === CONFIG.ADMIN_USERNAME) {
         const hashedPassword = await hashPassword(password);
         if (hashedPassword === CONFIG.ADMIN_PASSWORD_HASH) {
-            const user = { username: 'Denji', displayName: 'Denji (Admin)', role: 'admin' };
-            sessionStorage.setItem('denjit_user', JSON.stringify(user));
+            const user = { username: 'Denji', displayName: 'Denji', role: 'admin' };
+            saveSession(user, remember);
             return { success: true, user };
         }
     }
@@ -83,7 +94,7 @@ async function loginWithPassword(username, password) {
 }
 
 // Login with Passcode
-function loginWithPasscode(code) {
+function loginWithPasscode(code, remember = false) {
     const cleanCode = code.trim();
     if (!cleanCode) return { success: false, error: 'Add meg a kódot!' };
 
@@ -91,7 +102,7 @@ function loginWithPasscode(code) {
     const found = passcodes.find(p => p.code.trim() === cleanCode);
     if (found) {
         const user = { username: found.name, displayName: found.name, role: found.role || 'guest', code: cleanCode };
-        sessionStorage.setItem('denjit_user', JSON.stringify(user));
+        saveSession(user, remember);
         return { success: true, user };
     }
     return { success: false, error: 'Érvénytelen belépési kód!' };
@@ -103,9 +114,9 @@ async function login(username, password) {
     return res.success;
 }
 
-// Get current logged in user
+// Get current logged in user (session → "maradjak bejelentkezve" tároló)
 function getCurrentUser() {
-    const data = sessionStorage.getItem('denjit_user');
+    const data = sessionStorage.getItem('denjit_user') || localStorage.getItem('denjit_user');
     if (!data) return null;
     try {
         return JSON.parse(data);
@@ -141,5 +152,6 @@ function is7777User() {
 // Logout
 function logout() {
     sessionStorage.removeItem('denjit_user');
+    localStorage.removeItem('denjit_user');
     window.location.reload();
 }

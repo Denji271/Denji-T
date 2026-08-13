@@ -1,407 +1,476 @@
 <!DOCTYPE html>
-<html lang="hu">
+<html lang="hu" data-motion="full" data-invert="off">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Denji-T — Torrent Forum. Játékok, Filmek és Sorozatok egy helyen.">
-    <title>Denji-T — Forum</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="description" content="Denji-T — privát médiakönyvtár. Játékok, filmek és sorozatok.">
+    <meta name="theme-color" content="#ffffff">
+    <meta name="color-scheme" content="light">
+    <title>denji-t</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Raleway:wght@400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
     <link rel="icon" href="icon.jpg">
+    <script type="importmap">
+    { "imports": {
+        "three": "https://unpkg.com/three@0.143.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.143.0/examples/jsm/"
+    }}
+    </script>
 </head>
 <body>
 
-    <!-- ==================== LOGIN PAGE ==================== -->
-    <div id="login-page" class="active">
-        <div class="login-bg">
-            <div class="login-bg-orb login-bg-orb-1"></div>
-            <div class="login-bg-orb login-bg-orb-2"></div>
-            <div class="login-bg-orb login-bg-orb-3"></div>
-        </div>
-        <div class="login-card">
-            <div class="browser-chrome">
-                <div class="chrome-dots"><i></i><i></i><i></i></div>
-                <span class="chrome-title">DENJI-T // PORTAL</span>
-            </div>
-            <div class="login-card-inner">
-                <div class="login-logo">
-                    <img src="icon.jpg" alt="Logo" class="login-logo-img">
-                    <h1 class="login-logo-text">Denji-T</h1>
-                </div>
+<canvas id="starfield" aria-hidden="true"></canvas>
 
-                <!-- Login Mode Tabs -->
-                <div class="login-mode-tabs">
-                    <button type="button" class="login-mode-btn active" data-mode="passcode">Passcode</button>
-                    <button type="button" class="login-mode-btn" data-mode="admin">Admin</button>
-                </div>
-
-                <!-- Passcode Login Form -->
-                <form id="passcode-login-form" class="login-form-view active" autocomplete="off">
-                    <div class="input-group">
-                        <input type="password" id="passcode-input" required placeholder=" " autocomplete="off">
-                        <label for="passcode-input">Passcode</label>
-                        <span class="input-icon">🔑</span>
-                    </div>
-                    <div id="passcode-error" class="login-error"></div>
-                    <button type="submit" class="btn btn-login">
-                        <span>Belépés</span>
-                        <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                    </button>
-                </form>
-
-                <!-- Admin Login Form -->
-                <form id="login-form" class="login-form-view" autocomplete="off">
-                    <div class="input-group">
-                        <input type="text" id="username-input" required placeholder=" " autocomplete="off">
-                        <label for="username-input">Felhasználónév</label>
-                        <span class="input-icon">👤</span>
-                    </div>
-                    <div class="input-group">
-                        <input type="password" id="password-input" required placeholder=" " autocomplete="off">
-                        <label for="password-input">Jelszó</label>
-                        <span class="input-icon">🔒</span>
-                    </div>
-                    <div id="login-error" class="login-error"></div>
-                    <button type="submit" id="login-btn" class="btn btn-login">
-                        <span>Belépés</span>
-                        <svg class="btn-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-                    </button>
-                </form>
-            </div>
-        </div>
+<!-- ============================================================
+     BELÉPÉS — teljes képernyős irizáló hero
+     ============================================================ -->
+<div id="login-page" class="active">
+    <div class="iridescent" aria-hidden="true">
+        <span class="irid-blob b1"></span>
+        <span class="irid-blob b2"></span>
+        <span class="irid-blob b3"></span>
+        <span class="irid-grain"></span>
     </div>
 
-    <!-- ==================== MAIN PAGE ==================== -->
-    <div id="main-page">
-        <div class="app-frame">
-            <!-- Header -->
-            <header id="header">
-                <div class="header-left">
-                    <button id="sidebar-toggle" class="btn-icon" title="Menü">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-                    </button>
-                    <div class="header-logo">
-                        <img src="icon.jpg" alt="Logo" class="header-logo-img">
-                        <span class="header-logo-text">Denji-T</span>
-                    </div>
+    <header class="login-bar">
+        <span class="wordmark">denji-t</span>
+        <span class="label label-inverse">privát médiakönyvtár</span>
+    </header>
+
+    <main class="login-stage">
+        <h1 class="display login-display">Denji<span class="thin">-</span>T</h1>
+
+        <div class="login-panel">
+            <nav class="mode-links" role="tablist">
+                <button type="button" class="mode-link active" data-mode="passcode" role="tab">Belépőkód</button>
+                <span class="mode-sep">/</span>
+                <button type="button" class="mode-link" data-mode="admin" role="tab">Admin</button>
+            </nav>
+
+            <form id="passcode-login-form" class="login-form active" autocomplete="off">
+                <div class="line-field">
+                    <label class="label label-inverse" for="passcode-input">Kód</label>
+                    <input type="password" id="passcode-input" class="line-input" required placeholder="••••" inputmode="numeric" autocomplete="off">
+                    <button type="button" class="reveal" data-reveal="passcode-input" aria-label="Kód megjelenítése">mutasd</button>
                 </div>
-                <div class="header-right">
-                    <span id="user-greeting" class="user-greeting-badge"></span>
-                    <button id="manage-passcodes-btn" class="btn btn-icon-text admin-only" title="Belépési kódok kezelése" style="display: none;">
-                        <span>⚙️ Kódok Kezelése</span>
-                    </button>
-                    <button id="refresh-btn" class="btn-icon" title="Frissítés">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-                    </button>
-                    <button id="logout-btn" class="btn btn-logout" title="Kijelentkezés">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-                        <span>Kilépés</span>
-                    </button>
+                <p id="passcode-error" class="form-error" role="alert"></p>
+                <label class="check">
+                    <input type="checkbox" id="remember-me" checked>
+                    <span class="check-box" aria-hidden="true"></span>
+                    <span class="label label-inverse">Maradjak bejelentkezve</span>
+                </label>
+                <button type="submit" class="pill pill-dark">Belépés <span class="pill-arrow">→</span></button>
+            </form>
+
+            <form id="login-form" class="login-form" autocomplete="off">
+                <div class="line-field">
+                    <label class="label label-inverse" for="username-input">Felhasználónév</label>
+                    <input type="text" id="username-input" class="line-input" required placeholder="Denji" autocomplete="off">
                 </div>
-            </header>
+                <div class="line-field">
+                    <label class="label label-inverse" for="password-input">Jelszó</label>
+                    <input type="password" id="password-input" class="line-input" required placeholder="••••••••" autocomplete="off">
+                    <button type="button" class="reveal" data-reveal="password-input" aria-label="Jelszó megjelenítése">mutasd</button>
+                </div>
+                <p id="login-error" class="form-error" role="alert"></p>
+                <button type="submit" id="login-btn" class="pill pill-dark">Belépés adminként <span class="pill-arrow">→</span></button>
+            </form>
 
-            <div class="app-body">
-                <!-- Sidebar -->
-                <aside id="sidebar">
-                    <div class="sidebar-inner">
-                        <!-- Search -->
-                        <div class="sidebar-section">
-                            <h3 class="sidebar-title">Keresés</h3>
-                            <div class="search-wrapper">
-                                <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                                <input type="text" id="search-input" placeholder="Keresés név alapján..." autocomplete="off">
-                            </div>
-                        </div>
+            <p class="caps-hint" id="caps-hint" hidden>Caps Lock bekapcsolva</p>
+        </div>
+    </main>
 
-                        <!-- Category Filters -->
-                        <div class="sidebar-section">
-                            <h3 class="sidebar-title">Kategóriák</h3>
-                            <div id="category-filters">
-                                <label class="filter-checkbox">
-                                    <input type="checkbox" class="category-checkbox" data-category="Játék" checked>
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label"><span class="category-dot" style="background: #818cf8"></span>🎮 Játék</span>
-                                </label>
-                                <label class="filter-checkbox">
-                                    <input type="checkbox" class="category-checkbox" data-category="Film" checked>
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label"><span class="category-dot" style="background: #f59e0b"></span>🎬 Film</span>
-                                </label>
-                                <label class="filter-checkbox">
-                                    <input type="checkbox" class="category-checkbox" data-category="Sorozat" checked>
-                                    <span class="checkbox-custom"></span>
-                                    <span class="checkbox-label"><span class="category-dot" style="background: #34d399"></span>📺 Sorozat</span>
-                                </label>
-                            </div>
-                        </div>
+    <footer class="login-foot">
+        <span class="label label-inverse">Játék</span>
+        <span class="label label-inverse">Film</span>
+        <span class="label label-inverse">Sorozat</span>
+    </footer>
+</div>
 
-                        <!-- Sort -->
-                        <div class="sidebar-section">
-                            <h3 class="sidebar-title">Rendezés</h3>
-                            <select id="sort-select" class="sort-select">
-                                <option value="name-asc">Név (A → Z)</option>
-                                <option value="name-desc">Név (Z → A)</option>
-                                <option value="date-new">Legújabb elöl</option>
-                                <option value="date-old">Legrégebbi elöl</option>
-                            </select>
-                        </div>
-                    </div>
-                </aside>
+<!-- ============================================================
+     KÖNYVTÁR
+     ============================================================ -->
+<div id="main-page">
 
-                <!-- Main Content -->
-                <main id="content">
-                    <!-- Loading Spinner -->
-                    <div id="loading-spinner">
-                        <div class="spinner"></div>
-                        <p>Fájlok betöltése Google Drive-ról...</p>
-                    </div>
-
-                    <!-- Torrent Grid -->
-                    <div id="torrent-grid"></div>
-                </main>
-            </div>
+    <header id="header">
+        <div class="nav-left">
+            <button class="wordmark" id="brand-home">denji-t</button>
         </div>
 
-        <!-- Floating Add Torrent Button (Admin only) -->
-        <button id="add-torrent-fab" class="admin-only" title="Új torrent hozzáadása" style="display: none;">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
-    </div>
+        <nav class="nav-center" id="category-filters" aria-label="Kategóriák">
+            <button class="cat-link active" data-category="Játék">Játék</button>
+            <button class="cat-link active" data-category="Film">Film</button>
+            <button class="cat-link active" data-category="Sorozat">Sorozat</button>
+        </nav>
 
-    <!-- ==================== ADD TORRENT MODAL ==================== -->
-    <div id="add-modal" class="modal-overlay">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title" id="add-modal-title">Új Torrent Hozzáadása</h2>
-                <button class="modal-close btn-icon" title="Bezárás">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <div class="nav-right">
+            <button class="nav-link" id="cmdk-btn">Keresés <kbd>⌘K</kbd></button>
+            <button class="nav-link" id="refresh-btn">Frissítés</button>
+            <div class="menu-wrap">
+                <button class="nav-link" id="user-chip" aria-expanded="false">
+                    <span id="user-greeting">—</span> <span class="chev">↓</span>
                 </button>
+                <div class="menu-pop" id="user-pop" role="menu">
+                    <span class="label" id="user-pop-role">vendég</span>
+                    <button class="menu-item" id="menu-refresh" role="menuitem">Frissítés</button>
+                    <button class="menu-item admin-only" id="manage-passcodes-btn" role="menuitem">Belépési kódok</button>
+                    <button class="menu-item" id="logout-btn" role="menuitem">Kijelentkezés</button>
+                </div>
             </div>
-            <form id="add-form">
-                <input type="hidden" id="edit-torrent-id" value="">
-                <div class="modal-body">
-                    <!-- Quick Drive Notice Banner -->
-                    <div style="background: rgba(129, 140, 248, 0.08); border: 1px solid rgba(129, 140, 248, 0.2); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: var(--text-secondary); display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
-                        <span>📂 Feltöltés közvetlenül a Google Drive-ba</span>
-                        <a href="https://drive.google.com/drive/folders/1EMBjhqjnOIUh4fXxcgKK77w3gxnOqVe5" target="_blank" style="background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 999px; font-weight: 600; font-size: 12px; white-space: nowrap;">Megnyitás Drive-ban ↗</a>
-                    </div>
+            <button class="nav-link only-mobile" id="mobile-menu-btn" aria-label="Menü">Menü</button>
+        </div>
+    </header>
 
-                    <!-- Title -->
-                    <div class="form-group">
-                        <label for="add-title" class="form-label">Cím *</label>
-                        <input type="text" id="add-title" class="form-input" placeholder="pl. Elden Ring" required>
-                    </div>
+    <!-- HERO -->
+    <section class="hero">
+        <div class="iridescent" aria-hidden="true">
+            <span class="irid-blob b1"></span>
+            <span class="irid-blob b2"></span>
+            <span class="irid-blob b3"></span>
+            <span class="irid-grain"></span>
+        </div>
+        <div class="hero-wall" id="hero-wall" aria-hidden="true"></div>
+        <div class="hero-scrim" aria-hidden="true"></div>
 
-                    <!-- Category -->
-                    <div class="form-group">
-                        <label for="add-category" class="form-label">Kategória *</label>
-                        <select id="add-category" class="form-input form-select" required>
-                            <option value="">Válassz kategóriát...</option>
-                            <option value="Játék">🎮 Játék</option>
-                            <option value="Film">🎬 Film</option>
-                            <option value="Sorozat">📺 Sorozat</option>
+        <div class="hero-inner">
+            <p class="label label-inverse hero-eyebrow" id="hero-eyebrow">Privát médiakönyvtár</p>
+            <h1 class="display hero-display">Denji<span class="thin">-</span>T</h1>
+            <p class="hero-meta label label-inverse" id="hero-meta">—</p>
+        </div>
+
+        <div class="badge-rotate" aria-hidden="true">
+            <svg viewBox="0 0 120 120">
+                <defs><path id="badgeCircle" d="M60,60 m-42,0 a42,42 0 1,1 84,0 a42,42 0 1,1 -84,0"></path></defs>
+                <text><textPath href="#badgeCircle">GÖRGESS LE · GÖRGESS LE · GÖRGESS LE · </textPath></text>
+            </svg>
+            <span class="badge-arrow">↓</span>
+        </div>
+    </section>
+
+    <!-- KERESŐSOR -->
+    <div class="shell">
+        <section class="searchline">
+            <label class="label" for="search-input">Keresés</label>
+            <div class="searchline-row">
+                <input type="text" id="search-input" placeholder="Írj be egy címet…" autocomplete="off" spellcheck="false">
+                <button type="button" id="search-clear" class="link-quiet" hidden>törlés</button>
+            </div>
+        </section>
+
+        <!-- VEZÉRLŐK -->
+        <section class="controls">
+            <nav class="control-group" id="view-nav" aria-label="Nézetek">
+                <button class="ctrl-link active" data-view="all">Minden <sup data-count="all">0</sup></button>
+                <button class="ctrl-link" data-view="fav">Mentett <sup data-count="fav">0</sup></button>
+                <button class="ctrl-link" data-view="recent">Folytatás <sup data-count="recent">0</sup></button>
+            </nav>
+
+            <div class="control-group control-right">
+                <div class="select-line">
+                    <label class="label" for="sort-select">Rendezés</label>
+                    <select id="sort-select">
+                        <option value="date-new">Legújabb</option>
+                        <option value="date-old">Legrégebbi</option>
+                        <option value="name-asc">Név A–Z</option>
+                        <option value="name-desc">Név Z–A</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <p class="result-line label" id="result-count">Betöltés…</p>
+        <div class="active-filters" id="active-filters"></div>
+
+        <!-- FOLYTATÁS -->
+        <section class="section" id="continue-rail" hidden>
+            <div class="section-head">
+                <h2 class="section-title">Folytatás</h2>
+                <button class="link-quiet" id="clear-recent-btn">előzmények törlése</button>
+            </div>
+            <div class="continue-list" id="continue-track"></div>
+        </section>
+
+        <!-- KÖNYVTÁR -->
+        <section class="section">
+            <div class="section-head">
+                <h2 class="section-title" id="page-title">Teljes könyvtár</h2>
+                <span class="label" id="sync-line">—</span>
+            </div>
+            <div id="torrent-grid" class="list" data-layout="index"></div>
+        </section>
+
+        <!-- LÁBLÉC -->
+        <footer class="foot">
+            <div class="foot-col">
+                <span class="wordmark">denji-t</span>
+                <p class="foot-note">Privát könyvtár. Csak meghívottaknak.</p>
+            </div>
+            <div class="foot-col">
+                <span class="label">Kategóriák</span>
+                <p class="foot-note">Játék<br>Film<br>Sorozat</p>
+            </div>
+            <div class="foot-col">
+                <span class="label">Állapot</span>
+                <p class="foot-note" id="foot-status">—</p>
+            </div>
+        </footer>
+    </div>
+
+    <button id="add-torrent-fab" class="pill pill-light pill-float admin-only">Új tartalom <span class="pill-arrow">+</span></button>
+    <button id="scroll-top" class="pill pill-light pill-float-left" aria-label="Vissza a tetejére">↑</button>
+</div>
+
+<!-- Lebegő borító-előnézet (index nézet) -->
+<div class="hover-preview" id="hover-preview" aria-hidden="true"><img alt=""></div>
+
+<!-- ============================================================
+     RÉSZLETEK — teljes képernyős editorial nézet
+     ============================================================ -->
+<div id="detail-modal" class="takeover">
+    <div class="takeover-inner">
+        <header class="takeover-bar shell">
+            <button class="link-quiet modal-close">← vissza</button>
+            <div class="takeover-meta">
+                <span class="label detail-category"></span>
+                <span class="label detail-date"></span>
+            </div>
+            <button class="link-quiet" id="cinema-fav-btn">mentés</button>
+        </header>
+
+        <div class="shell">
+            <h2 class="detail-title heading"></h2>
+
+            <div id="cinema-hero-stage" class="stage">
+                <button class="stage-arrow stage-prev" id="cinema-prev-btn" aria-label="Előző">←</button>
+                <div id="cinema-player-wrapper" class="stage-box">
+                    <iframe id="cinema-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe>
+                    <video id="cinema-player-video" controls playsinline preload="metadata" style="display:none"></video>
+                    <div id="cinema-player-placeholder" class="stage-placeholder"></div>
+                </div>
+                <button class="stage-arrow stage-next" id="cinema-next-btn" aria-label="Következő">→</button>
+            </div>
+
+            <nav id="cinema-server-tabs" class="tab-links" aria-label="Médiaforrások"></nav>
+
+            <section id="series-episode-selector" class="series" style="display:none">
+                <div class="series-head">
+                    <nav class="tab-links" id="series-season-tabs" aria-label="Évadok"></nav>
+                    <button class="pill pill-light pill-sm" id="next-episode-btn" hidden>Következő rész →</button>
+                </div>
+                <div class="series-scroll">
+                    <button type="button" class="series-arrow" id="series-ep-prev" aria-label="Balra">←</button>
+                    <div class="series-episodes" id="series-episode-list"></div>
+                    <button type="button" class="series-arrow" id="series-ep-next" aria-label="Jobbra">→</button>
+                </div>
+            </section>
+
+            <div class="detail-body">
+                <div class="detail-desc-col">
+                    <span class="label">Leírás</span>
+                    <p class="detail-description"></p>
+                </div>
+                <div class="detail-side-col">
+                    <span class="label">Adatok</span>
+                    <div class="detail-badges" id="detail-badges"></div>
+                </div>
+            </div>
+
+            <div class="detail-actions"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     ADMIN — új / szerkesztés
+     ============================================================ -->
+<div id="add-modal" class="takeover">
+    <div class="takeover-inner">
+        <header class="takeover-bar shell">
+            <button class="link-quiet modal-close">← mégse</button>
+            <span class="label" id="add-modal-title">Új tartalom</span>
+            <span class="label">Google Drive</span>
+        </header>
+
+        <form id="add-form" class="shell form-shell">
+            <input type="hidden" id="edit-torrent-id" value="">
+
+            <div class="notice">
+                <span>A fájlok közvetlenül a Drive mappádba kerülnek.</span>
+                <a href="https://drive.google.com/drive/folders/1EMBjhqjnOIUh4fXxcgKK77w3gxnOqVe5" target="_blank" rel="noopener" class="pill pill-light pill-sm">Drive megnyitása ↗</a>
+            </div>
+
+            <fieldset class="form-block">
+                <legend class="label">Alapadatok</legend>
+                <div class="form-grid">
+                    <div class="line-field dark">
+                        <label class="label" for="add-title">Cím *</label>
+                        <input type="text" id="add-title" class="line-input" placeholder="pl. Elden Ring" required>
+                    </div>
+                    <div class="line-field dark">
+                        <label class="label" for="add-category">Kategória *</label>
+                        <select id="add-category" class="line-input" required>
+                            <option value="">Válassz…</option>
+                            <option value="Játék">Játék</option>
+                            <option value="Film">Film</option>
+                            <option value="Sorozat">Sorozat</option>
                         </select>
                     </div>
+                </div>
 
-                    <!-- Magyar Tag (Anya filmje) - Csak Film és Sorozat esetén -->
-                    <div class="form-group" id="magyar-group" style="display: none; margin-top: 10px;">
-                        <label class="filter-checkbox" style="padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-md);">
-                            <input type="checkbox" id="add-magyar">
-                            <span class="checkbox-custom"></span>
-                            <span class="checkbox-label" style="font-size: 14px; font-weight: 500; color: var(--text);">Magyar</span>
-                        </label>
-                    </div>
+                <label class="check check-dark" id="magyar-group" style="display:none">
+                    <input type="checkbox" id="add-magyar">
+                    <span class="check-box" aria-hidden="true"></span>
+                    <span class="label">Magyar tartalom — csak a 7777 kód látja</span>
+                </label>
 
-                    <!-- Cover Image -->
-                    <div class="form-group">
-                        <label class="form-label">Borítókép</label>
-                        <div id="cover-drop-zone" class="drop-zone">
-                            <svg class="drop-zone-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-                            <p class="drop-zone-text">Húzd ide a borítóképet vagy kattints</p>
-                            <input type="file" id="cover-input" accept="image/*" hidden>
-                        </div>
-                    </div>
-
-                    <!-- Magnet Link -->
-                    <div class="form-group">
-                        <label for="add-magnet" class="form-label">Magnet Link</label>
-                        <input type="text" id="add-magnet" class="form-input" placeholder="magnet:?xt=urn:btih:...">
-                    </div>
-
-                    <!-- Torrent File -->
-                    <div class="form-group">
-                        <label for="torrent-input" class="form-label">Torrent Fájl</label>
-                        <div class="file-input-wrapper">
-                            <input type="file" id="torrent-input" accept=".torrent" class="form-file-input">
-                        </div>
-                    </div>
-
-                    <!-- Film: single Streamtape link -->
-                    <div class="form-group" id="film-stream-group">
-                        <label for="add-stream" class="form-label">🎬 Streamtape Link (Online nézéshez)</label>
-                        <input type="text" id="add-stream" class="form-input" placeholder="pl. https://streamtape.com/v/G639mdPx77t1Jyy/...">
-                    </div>
-
-                    <!-- Sorozat: seasons + episodes -->
-                    <div class="form-group" id="series-stream-group" style="display: none;">
-                        <label class="form-label">📺 Évadok és részek (Streamtape linkek)</label>
-                        <div id="seasons-editor" class="seasons-editor"></div>
-                        <button type="button" id="add-season-btn" class="btn-add-episode-main">
-                            + Új évad
-                        </button>
-                        <p class="form-hint">Évadonként add meg a részek Streamtape linkjeit. A sorrend számít.</p>
-                    </div>
-
-                    <!-- Direct Download Link -->
-                    <div class="form-group">
-                        <label for="add-download" class="form-label">⬇️ Közvetlen Letöltés Link</label>
-                        <input type="text" id="add-download" class="form-input" placeholder="pl. https://buzzheavier.com/d/... vagy bármilyen direkt link">
-                    </div>
-
-                    <!-- YouTube Trailer Links -->
-                    <div class="form-group">
-                        <label for="add-trailers" class="form-label">🎥 YouTube Trailer Linkek (soronként egy)</label>
-                        <textarea id="add-trailers" class="form-input form-textarea" rows="3" placeholder="Soronként egy YouTube link, pl.:\nhttps://www.youtube.com/watch?v=abc123\nhttps://youtu.be/xyz456"></textarea>
-                    </div>
-
-                    <!-- Description -->
-                    <div class="form-group">
-                        <label for="add-description" class="form-label">Leírás</label>
-                        <textarea id="add-description" class="form-input form-textarea" rows="4" placeholder="Opcionális leírás..."></textarea>
+                <div class="line-field dark">
+                    <label class="label">Borítókép</label>
+                    <div id="cover-drop-zone" class="drop">
+                        <div class="drop-preview" id="cover-preview" hidden><img alt=""></div>
+                        <span class="drop-text">Húzd ide, vagy kattints a tallózáshoz</span>
+                        <input type="file" id="cover-input" accept="image/*" hidden>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button type="submit" class="btn btn-submit" id="add-submit-btn">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-                        <span id="add-submit-text">Torrent Feltöltése</span>
-                    </button>
+            </fieldset>
+
+            <fieldset class="form-block">
+                <legend class="label">Lejátszás</legend>
+                <div class="line-field dark" id="film-stream-group">
+                    <label class="label" for="add-stream">Streamtape link</label>
+                    <input type="text" id="add-stream" class="line-input" placeholder="https://streamtape.com/v/…">
                 </div>
+
+                <div id="series-stream-group" style="display:none">
+                    <span class="label">Évadok és részek</span>
+                    <div id="seasons-editor" class="seasons"></div>
+                    <button type="button" id="add-season-btn" class="pill pill-light pill-sm">Új évad +</button>
+                </div>
+
+                <div class="line-field dark">
+                    <label class="label" for="add-trailers">YouTube trailerek — soronként egy</label>
+                    <textarea id="add-trailers" class="line-input" rows="2" placeholder="https://www.youtube.com/watch?v=…"></textarea>
+                </div>
+            </fieldset>
+
+            <fieldset class="form-block">
+                <legend class="label">Letöltés</legend>
+                <div class="line-field dark">
+                    <label class="label" for="add-magnet">Magnet link</label>
+                    <input type="text" id="add-magnet" class="line-input" placeholder="magnet:?xt=urn:btih:…">
+                </div>
+                <div class="line-field dark">
+                    <label class="label" for="add-download">Közvetlen link</label>
+                    <input type="text" id="add-download" class="line-input" placeholder="https://…">
+                </div>
+                <div class="line-field dark">
+                    <label class="label" for="torrent-input">Torrent fájl</label>
+                    <input type="file" id="torrent-input" accept=".torrent" class="line-input file">
+                </div>
+            </fieldset>
+
+            <fieldset class="form-block">
+                <legend class="label">Leírás</legend>
+                <div class="line-field dark">
+                    <textarea id="add-description" class="line-input" rows="4" placeholder="Rövid ismertető, verzió, nyelv, méret…"></textarea>
+                </div>
+            </fieldset>
+
+            <div class="form-foot">
+                <button type="button" class="link-quiet modal-close">Mégse</button>
+                <button type="submit" class="pill pill-light" id="add-submit-btn"><span id="add-submit-text">Feltöltés</span> <span class="pill-arrow">→</span></button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ============================================================
+     BELÉPÉSI KÓDOK
+     ============================================================ -->
+<div id="passcode-modal" class="takeover">
+    <div class="takeover-inner">
+        <header class="takeover-bar shell">
+            <button class="link-quiet modal-close">← vissza</button>
+            <span class="label">Belépési kódok</span>
+            <span class="label">Admin</span>
+        </header>
+
+        <div class="shell form-shell">
+            <form id="add-passcode-form" class="form-grid form-grid-3">
+                <div class="line-field dark">
+                    <label class="label" for="new-friend-name">Név</label>
+                    <input type="text" id="new-friend-name" class="line-input" placeholder="pl. Peti" required>
+                </div>
+                <div class="line-field dark">
+                    <label class="label" for="new-friend-code">Kód</label>
+                    <input type="text" id="new-friend-code" class="line-input" placeholder="7788" required>
+                </div>
+                <button type="submit" class="pill pill-light">Mentés →</button>
             </form>
+
+            <div class="section-head"><h2 class="section-title">Aktív kódok</h2></div>
+            <div id="passcode-list" class="code-list"></div>
         </div>
     </div>
+</div>
 
-    <!-- ==================== PASSCODE MANAGEMENT MODAL (ADMIN) ==================== -->
-    <div id="passcode-modal" class="modal-overlay">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">🔑 Belépési Kódok Kezelése</h2>
-                <button class="modal-close btn-icon" title="Bezárás">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
-            <div class="modal-body">
-                <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;">
-                    Itt állíthatsz be belépési kódokat a barátaidnak.
-                </p>
-
-                <!-- Add New Passcode Form -->
-                <form id="add-passcode-form" style="background: rgba(0,0,0,0.25); padding: 16px; border-radius: 12px; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.08);">
-                    <h4 style="font-size: 14px; margin-bottom: 12px; color: var(--accent);">Új kód hozzáadása</h4>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px;">
-                        <div>
-                            <label class="form-label">Név</label>
-                            <input type="text" id="new-friend-name" class="form-input" placeholder="pl. Peti" required>
-                        </div>
-                        <div>
-                            <label class="form-label">Kód</label>
-                            <input type="text" id="new-friend-code" class="form-input" placeholder="pl. 7788" required>
-                        </div>
-                    </div>
-                    <button type="submit" class="btn btn-submit" style="padding: 10px; font-size: 14px;">Kód Mentése</button>
-                </form>
-
-                <!-- Passcode List -->
-                <h4 style="font-size: 14px; margin-bottom: 12px;">Aktív kódok listája</h4>
-                <div id="passcode-list" class="passcode-list-container"></div>
-            </div>
+<!-- ============================================================
+     TARTALÉK LEJÁTSZÓ
+     ============================================================ -->
+<div id="stream-modal" class="takeover">
+    <div class="takeover-inner">
+        <header class="takeover-bar shell">
+            <button class="link-quiet modal-close">← vissza</button>
+            <span class="label" id="stream-modal-title">Lejátszás</span>
+            <span class="label">Stream</span>
+        </header>
+        <div class="shell">
+            <div class="stage-box"><iframe id="stream-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe></div>
         </div>
     </div>
+</div>
 
-    <!-- ==================== STREAM PLAYER MODAL ==================== -->
-    <div id="stream-modal" class="modal-overlay">
-        <div class="modal-content modal-content-lg" style="max-width: 900px; padding: 0; overflow: hidden;">
-            <div class="modal-header" style="padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle);">
-                <h3 id="stream-modal-title" class="modal-title" style="font-size: 16px; display: flex; align-items: center; gap: 8px;">
-                    <span>▶️ Online Lejátszás</span>
-                </h3>
-                <button class="modal-close btn-icon" onclick="app.closeStreamModal()" title="Bezárás">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-            </div>
-            <div class="stream-player-container" style="position: relative; width: 100%; padding-top: 56.25%; background: #000;">
-                <iframe id="stream-player-iframe" src="" style="position: absolute; top:0; left:0; width:100%; height:100%; border:0;" allowfullscreen allow="autoplay; encrypted-media"></iframe>
-            </div>
+<!-- ============================================================
+     PARANCSSÁV
+     ============================================================ -->
+<div id="cmdk" class="cmdk">
+    <div class="cmdk-panel" role="dialog" aria-label="Gyorsparancsok">
+        <div class="cmdk-input-row">
+            <span class="label">Ugrás</span>
+            <input type="text" id="cmdk-input" placeholder="Cím vagy parancs…" autocomplete="off" spellcheck="false">
+            <kbd>esc</kbd>
+        </div>
+        <div class="cmdk-results" id="cmdk-results"></div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MEGERŐSÍTÉS / SÚGÓ
+     ============================================================ -->
+<div id="confirm-dialog" class="sheet">
+    <div class="sheet-card">
+        <span class="label" id="confirm-ico">Megerősítés</span>
+        <h3 class="sheet-title" id="confirm-title">Biztos vagy benne?</h3>
+        <p class="sheet-text" id="confirm-text"></p>
+        <div class="sheet-actions">
+            <button class="link-quiet" id="confirm-cancel">Mégse</button>
+            <button class="pill pill-light" id="confirm-ok">Törlés</button>
         </div>
     </div>
+</div>
 
-    <!-- ==================== DETAIL / CINEMA MODAL ==================== -->
-    <div id="detail-modal" class="modal-overlay">
-        <div class="modal-content modal-content-cinema">
-            <button class="modal-close btn-icon" title="Bezárás">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
+<div id="toast-container" aria-live="polite"></div>
+<div id="top-progress" aria-hidden="true"><span></span></div>
+<div id="scroll-progress" aria-hidden="true"><span></span></div>
 
-            <!-- 1. Top Edge-to-Edge Hero Stage with Navigation Arrows -->
-            <div id="cinema-hero-stage" class="cinema-hero-stage">
-                <button class="cinema-arrow cinema-arrow-prev" id="cinema-prev-btn" title="Előző média">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                </button>
-
-                <div id="cinema-player-wrapper" class="cinema-player-box">
-                    <iframe id="cinema-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe>
-                    <video id="cinema-player-video" controls playsinline preload="metadata" style="display:none;"></video>
-                    <div id="cinema-player-placeholder" class="cinema-placeholder">
-                        <div class="stage-cover-bg"></div>
-                    </div>
-                </div>
-
-                <button class="cinema-arrow cinema-arrow-next" id="cinema-next-btn" title="Következő média">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                </button>
-            </div>
-
-            <!-- 2. Media Selector Buttons (trailer 1, trailer 2, stream) -->
-            <div id="cinema-server-tabs" class="cinema-server-tabs"></div>
-
-            <!-- Series season + episode selector (horizontal) -->
-            <div id="series-episode-selector" class="series-episode-selector" style="display: none;">
-                <div class="series-season-tabs" id="series-season-tabs"></div>
-                <div class="series-ep-scroll-wrap">
-                    <button type="button" class="series-ep-arrow series-ep-prev" id="series-ep-prev" title="Balra">‹</button>
-                    <div class="series-episode-list" id="series-episode-list"></div>
-                    <button type="button" class="series-ep-arrow series-ep-next" id="series-ep-next" title="Jobbra">›</button>
-                </div>
-            </div>
-
-            <!-- 3. Content Section: Title, Meta & Description -->
-            <div class="cinema-info-box">
-                <div class="detail-meta">
-                    <span class="detail-category"></span>
-                    <span class="detail-date"></span>
-                </div>
-                <h2 class="detail-title"></h2>
-                <div class="detail-description-card">
-                    <div class="detail-description"></div>
-                </div>
-            </div>
-
-            <!-- 4. Bottom Download Options Grid -->
-            <div class="cinema-actions-section">
-                <div class="detail-actions"></div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ==================== TOAST CONTAINER ==================== -->
-    <div id="toast-container"></div>
-
-    <!-- Scripts -->
-    <script src="https://accounts.google.com/gsi/client" async defer></script>
-    <script src="js/config.js"></script>
-    <script src="js/auth.js"></script>
-    <script src="js/drive.js"></script>
-    <script src="js/app.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="js/config.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/drive.js"></script>
+<script src="js/driftwall.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/app.js"></script>
+<script type="module" src="js/starfield.js"></script>
 </body>
 </html>
