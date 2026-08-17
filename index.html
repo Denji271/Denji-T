@@ -4,36 +4,30 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="description" content="Denji-T — privát médiakönyvtár. Játékok, filmek és sorozatok.">
-    <meta name="theme-color" content="#ffffff">
-    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#0a0817">
+    <meta name="color-scheme" content="dark">
     <title>denji-t</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Raleway:wght@400&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="css/style.css">
     <link rel="icon" href="icon.jpg">
-    <script type="importmap">
-    { "imports": {
-        "three": "https://unpkg.com/three@0.143.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.143.0/examples/jsm/"
-    }}
-    </script>
 </head>
 <body>
 
-<canvas id="starfield" aria-hidden="true"></canvas>
+<!-- Aurora háttér — a teljes felület alatt fut -->
+<div id="aurora" aria-hidden="true">
+    <span class="au au-1"></span>
+    <span class="au au-2"></span>
+    <span class="au au-3"></span>
+    <span class="au au-4"></span>
+    <span class="au-grain"></span>
+</div>
 
 <!-- ============================================================
-     BELÉPÉS — teljes képernyős irizáló hero
+     BELÉPÉS
      ============================================================ -->
 <div id="login-page" class="active">
-    <div class="iridescent" aria-hidden="true">
-        <span class="irid-blob b1"></span>
-        <span class="irid-blob b2"></span>
-        <span class="irid-blob b3"></span>
-        <span class="irid-grain"></span>
-    </div>
-
     <header class="login-bar">
         <span class="wordmark">denji-t</span>
         <span class="label label-inverse">privát médiakönyvtár</span>
@@ -125,27 +119,10 @@
 
     <!-- HERO -->
     <section class="hero">
-        <div class="iridescent" aria-hidden="true">
-            <span class="irid-blob b1"></span>
-            <span class="irid-blob b2"></span>
-            <span class="irid-blob b3"></span>
-            <span class="irid-grain"></span>
-        </div>
-        <div class="hero-wall" id="hero-wall" aria-hidden="true"></div>
-        <div class="hero-scrim" aria-hidden="true"></div>
-
         <div class="hero-inner">
-            <p class="label label-inverse hero-eyebrow" id="hero-eyebrow">Privát médiakönyvtár</p>
+            <p class="label hero-eyebrow" id="hero-eyebrow">Privát médiakönyvtár</p>
             <h1 class="display hero-display">Denji<span class="thin">-</span>T</h1>
-            <p class="hero-meta label label-inverse" id="hero-meta">—</p>
-        </div>
-
-        <div class="badge-rotate" aria-hidden="true">
-            <svg viewBox="0 0 120 120">
-                <defs><path id="badgeCircle" d="M60,60 m-42,0 a42,42 0 1,1 84,0 a42,42 0 1,1 -84,0"></path></defs>
-                <text><textPath href="#badgeCircle">GÖRGESS LE · GÖRGESS LE · GÖRGESS LE · </textPath></text>
-            </svg>
-            <span class="badge-arrow">↓</span>
+            <p class="hero-meta label" id="hero-meta">—</p>
         </div>
     </section>
 
@@ -198,7 +175,7 @@
                 <h2 class="section-title" id="page-title">Teljes könyvtár</h2>
                 <span class="label" id="sync-line">—</span>
             </div>
-            <div id="torrent-grid" class="list" data-layout="index"></div>
+            <div id="torrent-grid" class="list"></div>
         </section>
 
         <!-- LÁBLÉC -->
@@ -218,15 +195,12 @@
         </footer>
     </div>
 
-    <button id="add-torrent-fab" class="pill pill-light pill-float admin-only">Új tartalom <span class="pill-arrow">+</span></button>
+    <button id="add-torrent-fab" class="pill pill-dark pill-float admin-only">Új tartalom <span class="pill-arrow">+</span></button>
     <button id="scroll-top" class="pill pill-light pill-float-left" aria-label="Vissza a tetejére">↑</button>
 </div>
 
-<!-- Lebegő borító-előnézet (index nézet) -->
-<div class="hover-preview" id="hover-preview" aria-hidden="true"><img alt=""></div>
-
 <!-- ============================================================
-     RÉSZLETEK — teljes képernyős editorial nézet
+     RÉSZLETEK
      ============================================================ -->
 <div id="detail-modal" class="takeover">
     <div class="takeover-inner">
@@ -247,7 +221,12 @@
                 <div id="cinema-player-wrapper" class="stage-box">
                     <iframe id="cinema-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe>
                     <video id="cinema-player-video" controls playsinline preload="metadata" style="display:none"></video>
-                    <div id="cinema-player-placeholder" class="stage-placeholder"></div>
+                    <!-- Tartalék kép, ha nincs lejátszható tartalom. A borító teljes egészében
+                         látszik (contain), mögötte a saját elmosott mása tölti ki a 16:9-es keretet. -->
+                    <div id="cinema-player-placeholder" class="stage-placeholder">
+                        <img id="cinema-placeholder-fill" class="ph-fill" alt="" aria-hidden="true" referrerpolicy="no-referrer" decoding="async" hidden>
+                        <img id="cinema-placeholder-img" class="ph-cover" alt="" referrerpolicy="no-referrer" decoding="async" hidden>
+                    </div>
                 </div>
                 <button class="stage-arrow stage-next" id="cinema-next-btn" aria-label="Következő">→</button>
             </div>
@@ -468,9 +447,7 @@
 <script src="js/config.js"></script>
 <script src="js/auth.js"></script>
 <script src="js/drive.js"></script>
-<script src="js/driftwall.js"></script>
 <script src="js/ui.js"></script>
 <script src="js/app.js"></script>
-<script type="module" src="js/starfield.js"></script>
 </body>
 </html>

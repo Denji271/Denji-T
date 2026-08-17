@@ -89,7 +89,6 @@ class App {
         if (cached && cached.length) {
             this.torrents = cached;
             this.applyFilters();
-            this.mountHeroWall();
             this.setStatus(`Gyorsítótár · ${timeAgo(driveAPI.getPersistedAt())}`);
         } else if (!silent) {
             this.renderSkeletons();
@@ -101,7 +100,6 @@ class App {
             await driveAPI.init();
             this.torrents = await driveAPI.loadAllTorrents();
             this.applyFilters();
-            this.mountHeroWall();
             this.setStatus(`Szinkronizálva · ${new Date().toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })}`);
 
             clearTimeout(this._settleTimer);
@@ -240,12 +238,12 @@ class App {
     /* ============================================================
        RENDER
        ============================================================ */
-    renderSkeletons(count = 8) {
+    renderSkeletons(count = 12) {
         document.getElementById('torrent-grid').innerHTML = Array.from({ length: count }, () => `
             <div class="skel-row">
-                <div class="skel"></div>
                 <div class="skel tall"></div>
                 <div class="skel"></div>
+                <div class="skel short"></div>
             </div>`).join('');
     }
 
@@ -262,29 +260,28 @@ class App {
 
     renderGrid() {
         const list = document.getElementById('torrent-grid');
-        list.dataset.layout = 'index';
 
-        const key = 'index|' + this.filteredTorrents.map(t => t.id).join('|');
+        const key = this.filteredTorrents.map(t => t.id).join('|');
         const animate = key !== this._lastKey;
         this._lastKey = key;
-
-        this.destroyWall();
 
         if (!this.filteredTorrents.length) {
             list.innerHTML = this.emptyState();
             return;
         }
 
+        CoverLoader.reset();
         list.innerHTML = this.filteredTorrents
-            .map((t, i) => this.rowHTML(t, i, animate))
+            .map((t, i) => this.cardHTML(t, i, animate))
             .join('');
+        list.querySelectorAll('.card-art img[data-src]').forEach(img => CoverLoader.load(img));
 
         if (animate) this.observeReveals(list);
     }
 
-    /* Beúszás görgetéskor — türelmes, 1.25s-es siklás */
+    /* Beúszás görgetéskor */
     observeReveals(scope) {
-        const targets = [...scope.querySelectorAll('.reveal:not(.in)')];
+        const targets = [...scope.querySelectorAll('.rv:not(.in)')];
         if (!targets.length) return;
 
         if (Prefs.get('motion') === 'reduced' || typeof IntersectionObserver === 'undefined') {
@@ -318,169 +315,12 @@ class App {
 
     // Görgetéskori tartalék: ami a képernyőre ért, az mindenképp megjelenik
     revealInView() {
-        const pending = document.querySelectorAll('.reveal:not(.in)');
+        const pending = document.querySelectorAll('.rv:not(.in)');
         if (!pending.length) return;
         const limit = window.innerHeight * 0.95;
         pending.forEach(el => {
             if (el.getBoundingClientRect().top < limit) el.classList.add('in');
         });
-    }
-
-    /* ---------- Fal nézet (DriftWall) ---------- */
-    wallItems() {
-        return this.filteredTorrents.map(t => ({
-            id: t.id,
-            title: t.title,
-            category: t.category,
-            year: yearOf(t.createdTime),
-            image: this.thumb(t.coverUrl, 400)
-        }));
-    }
-
-    renderWall() {
-        const list = document.getElementById('torrent-grid');
-        const narrow = window.matchMedia('(max-width: 760px)').matches;
-        const touch = window.matchMedia('(hover: none)').matches;
-
-        if (!document.getElementById('wall-canvas')) {
-            list.innerHTML = `
-                <div class="wall-stage">
-                    <div class="wall-canvas" id="wall-canvas"></div>
-                    <div class="wall-vignette"></div>
-                    <span class="label wall-count" id="wall-count"></span>
-                    <div class="wall-readout" id="wall-readout">
-                        <span class="label" id="wall-readout-kicker"></span>
-                        <h3 class="wall-title" id="wall-readout-title"></h3>
-                        <span class="label" id="wall-readout-meta"></span>
-                    </div>
-                    <span class="label wall-hint">Vidd a mutatót a falra · kattints a megnyitáshoz</span>
-                </div>`;
-            this.wall = null;
-        }
-
-        const canvas = document.getElementById('wall-canvas');
-        const items = this.wallItems();
-
-        if (!this.wall) {
-            this.wall = new DriftWall(canvas, {
-                items,
-                columns: 'auto',
-                overscan: narrow ? 3 : 4,
-                maxColumns: 11,
-                offsetX: -0.05,
-                tileWidth: narrow ? 132 : 208,
-                tileHeight: narrow ? 88 : 138,
-                gap: narrow ? 12 : 18,
-                radius: 0,
-                tilt: 15,
-                turn: -13,
-                perspective: narrow ? 900 : 1200,
-                depth: 120,
-                speed: narrow ? 30 : 40,
-                variance: 0.45,
-                parallax: narrow ? 0 : 0.6,
-                // érintésnél a megállított fal miatt pontosan oda koppint a felhasználó, ahová céloz
-                pauseOnHover: touch,
-                lift: 72,
-                fade: 0.62,
-                dim: 0.42,
-                grayscale: true,
-                overlayColor: '#000000',
-                onActive: (item) => this.updateWallReadout(item),
-                onSelect: (item) => item && this.openDetail(item.id)
-            });
-            this.wall.setReduced(Prefs.get('motion') === 'reduced');
-        } else {
-            this.wall.setItems(items);
-        }
-
-        this.setText('wall-count', `${items.length} tétel a falon`);
-    }
-
-    updateWallReadout(item) {
-        const box = document.getElementById('wall-readout');
-        if (!box) return;
-        if (!item) {
-            box.classList.remove('on');
-            return;
-        }
-        const index = this.filteredTorrents.findIndex(t => t.id === item.id);
-        this.setText('wall-readout-kicker', `${String(index + 1).padStart(2, '0')} / ${String(this.filteredTorrents.length).padStart(2, '0')}`);
-        this.setText('wall-readout-title', item.title);
-        this.setText('wall-readout-meta', [item.category, item.year].filter(Boolean).join(' · '));
-        box.classList.add('on');
-    }
-
-    destroyWall() {
-        if (!this.wall) return;
-        this.wall.destroy();
-        this.wall = null;
-    }
-
-    /* ---------- Hero borítófal ---------- */
-    mountHeroWall() {
-        const el = document.getElementById('hero-wall');
-        if (!el || typeof DriftWall === 'undefined') return;
-
-        let items = this.visibleLibrary()
-            .filter(t => t.coverUrl)
-            .map(t => ({ id: t.id, title: t.title, image: this.thumb(t.coverUrl, 320) }));
-
-        // Fisher-Yates keverés — ne ismétlődjön kiszámíthatóan
-        for (let i = items.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [items[i], items[j]] = [items[j], items[i]];
-        }
-
-        if (items.length < 3) {
-            this.heroWall?.destroy();
-            this.heroWall = null;
-            el.replaceChildren();
-            return;
-        }
-
-        const narrow = window.matchMedia('(max-width: 760px)').matches;
-        if (!this.heroWall) {
-            this.heroWall = new DriftWall(el, {
-                items,
-                columns: 'auto',
-                // több oszlop + enyhe balra tolás, hogy a dőlés miatt bal oldalt se maradjon üres sáv
-                overscan: narrow ? 4 : 5,
-                maxColumns: 10,
-                offsetX: -0.09,
-                tileWidth: narrow ? 130 : 240,
-                tileHeight: narrow ? 86 : 158,
-                gap: narrow ? 12 : 18,
-                radius: 0,
-                tilt: 17,
-                turn: -15,
-                perspective: 1100,
-                depth: 150,
-                speed: narrow ? 18 : 26,
-                variance: 0.5,
-                parallax: narrow ? 0 : 0.35,
-                lift: 0,
-                fade: 0.7,
-                dim: 0.5,
-                grayscale: true,
-                overlayColor: '#000000',
-                interactive: false,
-                pointerTarget: document.querySelector('.hero')
-            });
-            this.heroWall.setReduced(Prefs.get('motion') === 'reduced');
-        } else {
-            this.heroWall.setItems(items);
-        }
-    }
-
-    marksHTML(t, info) {
-        const canSeeMagyar = isAdmin() || is7777User();
-        const marks = [];
-        if (t.isMagyar && canSeeMagyar) marks.push('<span class="mark">Magyar</span>');
-        if (info.epCount) marks.push(`<span class="mark">${info.seasons.length > 1 ? `${info.seasons.length} évad` : `${info.epCount} rész`}</span>`);
-        else if (t.streamUrl) marks.push('<span class="mark">Stream</span>');
-        if (this.favs.has(t.id)) marks.push('<span class="mark mark-solid">Mentve</span>');
-        return marks.join('');
     }
 
     actionsHTML(t, info) {
@@ -497,40 +337,37 @@ class App {
         return acts.join('');
     }
 
-    rowHTML(t, i, animate = true) {
+    /* A borító a főszereplő: poszterarányú kártya, a részletek hoverre nyílnak ki. */
+    cardHTML(t, i, animate = true) {
         const info = this.playableInfo(t);
         const progress = this.progressOf(t, info);
-        return `
-        <article class="row${animate ? ' reveal' : ''}" data-id="${t.id}" data-cover="${esc(this.thumb(t.coverUrl, 420))}" tabindex="0" style="--i:${Math.min(i, 30)}">
-            <span class="row-num">${String(i + 1).padStart(2, '0')}</span>
-            <h3 class="row-title">${esc(t.title)}</h3>
-            <div class="row-meta">
-                <span class="row-marks">${this.marksHTML(t, info)}</span>
-                <span class="row-cat">${esc(t.category)}</span>
-                <span class="row-date">${yearOf(t.createdTime)}</span>
-            </div>
-            <div class="row-actions">${this.actionsHTML(t, info)}</div>
-            ${progress ? `<span class="row-bar" style="width:${progress}%"></span>` : ''}
-        </article>`;
-    }
+        const cover = this.thumb(t.coverUrl, 500);
+        const saved = this.favs.has(t.id);
+        const year = yearOf(t.createdTime);
 
-    tileHTML(t, i, animate = true) {
-        const info = this.playableInfo(t);
-        const cover = this.thumb(t.coverUrl, 1200);
+        const bits = [];
+        if (year) bits.push(esc(year));
+        if (info.epCount) bits.push(info.seasons.length > 1 ? `${info.seasons.length} évad` : `${info.epCount} rész`);
+        else if (t.streamUrl) bits.push('Stream');
+        if (t.isMagyar && (isAdmin() || is7777User())) bits.push('Magyar');
+
         return `
-        <article class="tile${animate ? ' reveal' : ''}" data-id="${t.id}" tabindex="0" style="--i:${Math.min(i, 30)}">
-            <div class="tile-media">
+        <article class="card${animate ? ' rv' : ''}" data-id="${t.id}" tabindex="0" style="--i:${Math.min(i, 30)}">
+            <div class="card-art">
+                <span class="card-blank">${esc(t.title)}</span>
                 ${cover
-                    ? `<img src="${esc(cover)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onload="this.classList.add('loaded')" onerror="this.remove()">`
-                    : '<span class="tile-empty">Nincs borító</span>'}
-            </div>
-            <div class="tile-foot">
-                <h3 class="tile-title">${esc(t.title)}</h3>
-                <div class="tile-meta">
-                    <span class="label">${esc(t.category)}</span>
-                    <span class="label">${yearOf(t.createdTime)}</span>
-                    <span class="row-marks">${this.marksHTML(t, info)}</span>
+                    ? `<img class="card-cover" data-src="${esc(cover)}" alt="" decoding="async" referrerpolicy="no-referrer">`
+                    : ''}
+                <span class="card-kind">${esc(t.category)}</span>
+                <button class="card-fav${saved ? ' is-on' : ''}" data-act="fav" aria-label="${saved ? 'Mentve' : 'Mentés'}">${saved ? '★' : '☆'}</button>
+                <div class="card-veil">
+                    ${info.canStream ? '<button class="card-play" data-act="play">▶ Lejátszás</button>' : ''}
                 </div>
+                <span class="card-bar"${progress ? '' : ' hidden'}><i style="width:${progress}%"></i></span>
+            </div>
+            <div class="card-info">
+                <h3 class="card-title">${esc(t.title)}</h3>
+                <div class="card-meta">${bits.map(b => `<span>${b}</span>`).join('<span class="dot"></span>')}</div>
             </div>
             <div class="row-actions">${this.actionsHTML(t, info)}</div>
         </article>`;
@@ -620,13 +457,14 @@ class App {
         } else {
             document.querySelectorAll(`[data-id="${id}"] [data-act="fav"]`).forEach(btn => {
                 btn.classList.toggle('is-on', !was);
-                btn.textContent = was ? 'Mentés' : 'Mentve';
+                // A poszteren csillag jelzi a mentést, a művelet-listában szöveg
+                if (btn.classList.contains('card-fav')) {
+                    btn.textContent = was ? '☆' : '★';
+                    btn.setAttribute('aria-label', was ? 'Mentés' : 'Mentve');
+                } else {
+                    btn.textContent = was ? 'Mentés' : 'Mentve';
+                }
             });
-            const marks = document.querySelector(`[data-id="${id}"] .row-marks`);
-            if (marks) {
-                const t2 = this.torrents.find(x => x.id === id);
-                if (t2) marks.innerHTML = this.marksHTML(t2, this.playableInfo(t2));
-            }
             this.renderCounts();
         }
         const favBtn = document.getElementById('cinema-fav-btn');
@@ -658,16 +496,13 @@ class App {
 
     refreshRowState(id) {
         const t = this.torrents.find(x => x.id === id);
-        const row = document.querySelector(`.row[data-id="${id}"]`);
-        if (!t || !row) return;
+        const card = document.querySelector(`.card[data-id="${id}"]`);
+        if (!t || !card) return;
         const percent = this.progressOf(t, this.playableInfo(t));
-        let bar = row.querySelector('.row-bar');
-        if (percent && !bar) {
-            bar = document.createElement('span');
-            bar.className = 'row-bar';
-            row.appendChild(bar);
-        }
-        if (bar) bar.style.width = `${percent}%`;
+        const bar = card.querySelector('.card-bar');
+        if (!bar) return;
+        bar.hidden = !percent;
+        bar.querySelector('i').style.width = `${percent}%`;
     }
 
     /* ============================================================
@@ -818,7 +653,7 @@ class App {
                 return;
             }
 
-            const item = e.target.closest('.row, .tile');
+            const item = e.target.closest('.card');
             if (!item) return;
             const id = item.dataset.id;
             const actBtn = e.target.closest('[data-act]');
@@ -838,14 +673,12 @@ class App {
         });
 
         list?.addEventListener('keydown', (e) => {
-            const item = e.target.closest('.row, .tile');
+            const item = e.target.closest('.card');
             if (item && (e.key === 'Enter' || e.key === ' ')) {
                 e.preventDefault();
                 this.openDetail(item.dataset.id);
             }
         });
-
-        this.bindHoverPreview(list);
 
         document.getElementById('continue-track')?.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-cont-act]');
@@ -926,11 +759,6 @@ class App {
         document.addEventListener('ui:overlay', () => {
             const takeoverActive = !!document.querySelector('.takeover.active');
             document.body.classList.toggle('takeover-open', takeoverActive);
-            const covered = UI.anyModalOpen();
-            [this.wall, this.heroWall].forEach(w => {
-                if (!w) return;
-                if (covered) w.stop(); else w.start();
-            });
         });
 
         this.bindCmdk();
@@ -1003,54 +831,6 @@ class App {
         driveAPI.clearCache();
         await this.loadTorrents({ silent: true });
         UI.toast('Könyvtár frissítve.', 'success', 2400);
-    }
-
-    /* ============================================================
-       LEBEGŐ ELŐNÉZET (index nézet)
-       ============================================================ */
-    bindHoverPreview(list) {
-        const preview = document.getElementById('hover-preview');
-        if (!list || !preview) return;
-        const img = preview.querySelector('img');
-        let raf = null, x = 0, y = 0;
-
-        const move = () => {
-            raf = null;
-            preview.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%) scale(${preview.classList.contains('on') ? 1 : 0.94})`;
-        };
-
-        list.addEventListener('mousemove', (e) => {
-            if (!preview.classList.contains('on')) return;
-            const w = preview.offsetWidth || 300;
-            const h = preview.offsetHeight || 200;
-            const offset = w / 2 + 44;
-
-            // A jobb oldali sávban jelennek meg a művelet-linkek — ott balra ugrik az előnézet
-            x = e.clientX > window.innerWidth * 0.52 ? e.clientX - offset : e.clientX + offset;
-            x = Math.min(Math.max(x, w / 2 + 12), window.innerWidth - w / 2 - 12);
-            y = Math.min(Math.max(e.clientY, h / 2 + 12), window.innerHeight - h / 2 - 12);
-
-            if (!raf) raf = requestAnimationFrame(move);
-        });
-
-        list.addEventListener('mouseover', (e) => {
-            const row = e.target.closest('.row');
-            if (!row || Prefs.get('layout') !== 'index' || Prefs.get('motion') === 'reduced') return;
-            if (!window.matchMedia('(hover: hover)').matches) return;
-            const cover = row.dataset.cover;
-            if (!cover) { preview.classList.remove('on'); return; }
-            if (img.dataset.src !== cover) {
-                img.dataset.src = cover;
-                img.src = cover;
-                img.referrerPolicy = 'no-referrer';
-            }
-            preview.classList.add('on');
-        });
-
-        list.addEventListener('mouseleave', () => preview.classList.remove('on'));
-        list.addEventListener('mouseout', (e) => {
-            if (!e.relatedTarget || !e.relatedTarget.closest?.('.row')) preview.classList.remove('on');
-        });
     }
 
     /* ============================================================
@@ -1225,12 +1005,7 @@ class App {
         this.currentMediaIndex = 0;
         this.currentSeasons = info.seasons;
 
-        const placeholder = document.getElementById('cinema-player-placeholder');
-        if (placeholder) {
-            placeholder.style.backgroundImage = t.coverUrl ? `url('${this.thumb(t.coverUrl, 1200)}')` : '';
-            placeholder.dataset.empty = t.coverUrl ? '' : 'Nincs lejátszható tartalom';
-            placeholder.style.display = 'block';
-        }
+        this.showPlaceholderCover(t);
 
         const seriesSelector = document.getElementById('series-episode-selector');
         if (info.seasons) {
@@ -1267,6 +1042,33 @@ class App {
 
         UI.openModal(modal);
         this.renderContinue();
+    }
+
+    /**
+     * A lejátszó tartalék képe — akkor látszik, ha nincs se stream, se rész, se trailer.
+     * Valódi <img>-ek, nem CSS háttér: így újrapróbálhatók, és a hiba is látszik.
+     */
+    showPlaceholderCover(t) {
+        const placeholder = document.getElementById('cinema-player-placeholder');
+        if (!placeholder) return;
+        const cover = t.coverUrl ? this.thumb(t.coverUrl, 1200) : '';
+
+        placeholder.dataset.empty = cover ? '' : 'Nincs lejátszható tartalom';
+        placeholder.style.display = 'block';
+
+        placeholder.querySelectorAll('img').forEach(el => {
+            if (!cover) {
+                el.hidden = true;
+                el.classList.remove('loaded');
+                delete el.dataset.src;
+                return;
+            }
+            el.hidden = false;
+            el.dataset.src = cover;
+            // A src-t nem vesszük el: a futó kérés megszakítása némán elnyelné az eseményeket.
+            if (el.getAttribute('src') !== cover) el.classList.remove('loaded');
+            CoverLoader.load(el, () => { placeholder.dataset.empty = 'A borító nem tölthető be'; });
+        });
     }
 
     renderDescription(t, modal) {

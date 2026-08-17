@@ -66,12 +66,113 @@ function timeAgo(ts) {
     return formatDate(new Date(ts).toISOString());
 }
 
+/* ---------------- Borítóbetöltő ----------------
+ * Korlátozott párhuzamossággal tölti be a borítókat, a hibásakat növekvő várakozással
+ * újrapróbálja. Minden feladatnak van időkorlátja: ha egy kérés megszakad (pl. mert a
+ * kép src-je közben megváltozik), a böngésző se load, se error eseményt nem küld — az
+ * időzítő nélkül a foglalt hely sosem szabadulna fel, és néhány ilyen után az egész
+ * betöltés leállna.
+ */
+const CoverLoader = {
+    maxParallel: 6,
+    maxRetries: 3,
+    timeout: 12000,
+    _queue: [],
+    _active: 0,
+
+    load(img, onFail) {
+        if (!img || !img.dataset.src) return;
+
+        // Ami már a helyén van és betöltött, azt nem töltjük újra
+        if (img.getAttribute('src') === img.dataset.src && img.naturalWidth) {
+            img.classList.add('loaded');
+            return;
+        }
+
+        this._cancel(img);
+        const job = { img, onFail, tries: 0, cancelled: false };
+        img._coverJob = job;
+        this._queue.push(job);
+        this._pump();
+    },
+
+    /* Egy képhez tartozó korábbi feladat érvénytelenítése (újrarenderelés, másik tétel) */
+    _cancel(img) {
+        const job = img._coverJob;
+        if (job) job.cancelled = true;
+        img._coverJob = null;
+    },
+
+    /* Új rács renderelésekor a régi képek várakozó feladatai eldobhatók */
+    reset() {
+        this._queue.forEach(job => {
+            job.cancelled = true;
+            if (job.img) job.img._coverJob = null;
+        });
+        this._queue = [];
+    },
+
+    _pump() {
+        while (this._active < this.maxParallel && this._queue.length) {
+            const job = this._queue.shift();
+            if (job.cancelled || !job.img.isConnected) continue;
+            this._start(job);
+        }
+    },
+
+    _start(job) {
+        const img = job.img;
+        this._active++;
+
+        let settled = false;
+        const release = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(job.timer);
+            img.onload = img.onerror = null;
+            this._active--;
+            this._pump();
+        };
+
+        const fail = () => {
+            if (settled) return;
+            job.tries++;
+            const retry = job.tries <= this.maxRetries && !job.cancelled && img.isConnected;
+            release();
+            if (retry) {
+                setTimeout(() => {
+                    if (job.cancelled) return;
+                    this._queue.unshift(job);
+                    this._pump();
+                }, 350 * job.tries);
+            } else if (!job.cancelled) {
+                // Az elemet nem távolítjuk el: .loaded osztály nélkül átlátszó marad, és
+                // mögötte a tartalék (cím, illetve üzenet) látszik. Újranyitáskor is használható.
+                img.removeAttribute('src');
+                img._coverJob = null;
+                job.onFail?.(img);
+            }
+        };
+
+        job.timer = setTimeout(fail, this.timeout);
+        img.onload = () => {
+            if (!job.cancelled) {
+                img.classList.add('loaded');
+                img._coverJob = null;
+            }
+            release();
+        };
+        img.onerror = fail;
+        img.src = img.dataset.src;
+    }
+};
+
 /* ---------------- Preferences ---------------- */
 const Prefs = {
     key: 'denjit_prefs_v4',
-    // A megjelenés rögzített: papír kontraszt, teljes mozgás. Csak az elrendezés választható.
+    // A megjelenés rögzített: aurora sötét téma, teljes mozgás.
     fixed: { invert: 'off', motion: 'full' },
-    defaults: { layout: 'index' },
+    defaults: {},
     data: {},
 
     load() {
@@ -90,9 +191,6 @@ const Prefs = {
         const html = document.documentElement;
         html.dataset.invert = this.fixed.invert;
         html.dataset.motion = this.fixed.motion;
-
-        const list = document.getElementById('torrent-grid');
-        if (list) list.dataset.layout = 'index';
     }
 };
 
