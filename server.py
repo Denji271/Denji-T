@@ -29,6 +29,11 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
             return
         super().log_message(format, *args)
 
+    def end_headers(self):
+        # Helyi kiszolgálás: a böngésző mindig kérje le újra a módosított fájlokat
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        super().end_headers()
+
     def _safe_write(self, data: bytes):
         """Write response body; ignore client disconnects."""
         try:
