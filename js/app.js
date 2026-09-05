@@ -1476,6 +1476,7 @@ class App {
         let currentSeason = 1;
         const autoEpisodeBySeason = {};
         const items = [];
+        let detectedTitle = '';
 
         function safeDecode(str) {
             try {
@@ -1492,6 +1493,17 @@ class App {
                 return parseInt(sMatch[1] || sMatch[2], 10);
             }
             return null;
+        }
+
+        function extractTitle(str) {
+            if (detectedTitle || !str) return;
+            const m = str.match(/^([a-zA-Z0-9_\-.\s]+?)(?:[._\s-]+(?:s\d{1,2}|season|\d{1,2}\.?\s*(?:évad|evad)|\d{1,2}x\d{1,2}))/i);
+            if (m && m[1]) {
+                let t = m[1].replace(/[._\-]+/g, ' ').trim();
+                if (t.length > 2 && !/^(https?|www|streamtape)/i.test(t)) {
+                    detectedTitle = t;
+                }
+            }
         }
 
         function extractSeasonAndEpisode(text, urlStr, fallbackSeason) {
@@ -1513,6 +1525,9 @@ class App {
 
             const textWithoutUrl = text.replace(urlStr, ' ').trim();
             const candidates = [textWithoutUrl, filename, decodedUrl];
+
+            if (filename) extractTitle(filename);
+            if (textWithoutUrl) extractTitle(textWithoutUrl);
 
             // 1. S01E02, s1e02, S01.E02, S01 - E02
             for (const str of candidates) {
@@ -1552,7 +1567,23 @@ class App {
                 }
             }
 
-            // 4. Különálló évad jelölés
+            // 4. 3-jegyű scene jelölés: pl. 101 -> S01E01, 208 -> S02E08
+            for (const str of candidates) {
+                if (!str || (season !== null && episode !== null)) continue;
+                const m3 = str.match(/(?:^|[^a-zA-Z0-9])([1-9])([0-9]{2})(?:[^a-zA-Z0-9]|$)/);
+                if (m3) {
+                    const s = parseInt(m3[1], 10);
+                    const e = parseInt(m3[2], 10);
+                    const num = parseInt(m3[0].replace(/\D/g, ''), 10);
+                    if (![720, 480, 360, 240, 144, 108, 264, 265].includes(num)) {
+                        season = s;
+                        episode = e;
+                        return { season, episode };
+                    }
+                }
+            }
+
+            // 5. Különálló évad jelölés
             for (const str of candidates) {
                 if (!str || season !== null) continue;
                 const sMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,2})[._\s-]*(?:évad|evad|season))|(?:(?:évad|evad|season)[._\s-]*(\d{1,2})))(?:[^a-zA-Z0-9]|$)/i)
@@ -1562,7 +1593,7 @@ class App {
                 }
             }
 
-            // 5. Különálló rész jelölés
+            // 6. Különálló rész jelölés
             for (const str of candidates) {
                 if (!str || episode !== null) continue;
                 const eMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,3})[._\s-]*(?:rész|resz|epizód|epizod|ep))|(?:(?:rész|resz|epizód|epizod|episode|ep)[._\s-]*(\d{1,3})))(?:[^a-zA-Z0-9]|$)/i)
@@ -1572,7 +1603,7 @@ class App {
                 }
             }
 
-            // 6. Fájlnév számozás (pl. "Bleach_-_01_[1080p].mp4" vagy "Naruto.05.mp4")
+            // 7. Fájlnév számozás (pl. "Bleach_-_01_[1080p].mp4" vagy "Naruto.05.mp4")
             if (episode === null && filename) {
                 const fnMatch = filename.match(/[._\s-–]0*(\d{1,3})(?:v\d)?\s*(?:\.(?:mp4|mkv|avi|webm)|[._\s-–](?:1080p|720p|480p|hdtv|web-dl|bluray|x264|x265|hevc))/i);
                 if (fnMatch) {
@@ -1602,7 +1633,10 @@ class App {
 
             if (matchedUrls && matchedUrls.length > 0) {
                 for (const url of matchedUrls) {
-                    const cleanUrl = url.replace(/[.,;:!?)\]]+$/, '');
+                    let cleanUrl = url.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
+                    if (cleanUrl.endsWith(')') && !cleanUrl.includes('(')) cleanUrl = cleanUrl.slice(0, -1);
+                    if (cleanUrl.endsWith(']') && !cleanUrl.includes('[')) cleanUrl = cleanUrl.slice(0, -1);
+
                     const { season, episode } = extractSeasonAndEpisode(line, cleanUrl, currentSeason);
                     const finalSeason = season || currentSeason;
 
@@ -1631,7 +1665,10 @@ class App {
             const allUrls = rawText.match(/(https?:\/\/[^\s"'<>]+)/g);
             if (allUrls) {
                 allUrls.forEach((u, i) => {
-                    const cleanUrl = u.replace(/[.,;:!?)\]]+$/, '');
+                    let cleanUrl = u.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
+                    if (cleanUrl.endsWith(')') && !cleanUrl.includes('(')) cleanUrl = cleanUrl.slice(0, -1);
+                    if (cleanUrl.endsWith(']') && !cleanUrl.includes('[')) cleanUrl = cleanUrl.slice(0, -1);
+
                     const { season, episode } = extractSeasonAndEpisode('', cleanUrl, 1);
                     items.push({
                         season: season || 1,
@@ -1673,6 +1710,7 @@ class App {
                 };
             });
 
+        sortedSeasons.detectedTitle = detectedTitle;
         return sortedSeasons;
     }
 
@@ -1702,6 +1740,12 @@ class App {
             return;
         }
 
+        // Cím automatikus kitöltése ha a Cím mező még üres
+        const titleInput = document.getElementById('add-title');
+        if (titleInput && !titleInput.value.trim() && parsedSeasons.detectedTitle) {
+            titleInput.value = parsedSeasons.detectedTitle;
+        }
+
         const editor = document.getElementById('seasons-editor');
         if (editor) editor.innerHTML = '';
 
@@ -1713,7 +1757,8 @@ class App {
         const seasonCount = parsedSeasons.length;
 
         if (statusEl) {
-            statusEl.textContent = `✅ Felismerve: ${seasonCount} évad, ${totalEps} rész!`;
+            const titleMsg = parsedSeasons.detectedTitle ? ` (${parsedSeasons.detectedTitle})` : '';
+            statusEl.textContent = `✅ Felismerve${titleMsg}: ${seasonCount} évad, ${totalEps} rész!`;
             statusEl.className = 'bulk-status-badge';
             statusEl.style.display = 'inline-block';
         }
