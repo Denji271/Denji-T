@@ -322,7 +322,29 @@
                 </div>
 
                 <div id="series-stream-group" style="display:none">
-                    <span class="label">Évadok és részek</span>
+                    <div class="line-field dark bulk-links-container">
+                        <div class="bulk-field-head">
+                            <label class="label" for="add-series-bulk-links">Streamtape linkek tömeges bemásolása</label>
+                            <span class="label-hint">Automatikusan felismeri az évadokat és részeket</span>
+                        </div>
+                        <textarea id="add-series-bulk-links" class="line-input" rows="4" placeholder="Illeszd be ide az összes Streamtape linket (akár soronként, vegyesen, S01E01 formátumban vagy fájlnévvel)...
+Például:
+https://streamtape.com/v/xxxx/Sorozat.S01E01.mp4
+https://streamtape.com/v/yyyy/Sorozat.S01E02.mp4
+vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
+                        <div class="bulk-actions-row">
+                            <button type="button" id="btn-parse-series-links" class="pill pill-light pill-sm">
+                                <span>⚡ Automatikus felismerés és betöltés</span>
+                            </button>
+                            <button type="button" id="btn-clear-bulk-links" class="link-quiet btn-clear-bulk" style="display:none;">Törlés</button>
+                            <span id="bulk-parse-status" class="bulk-status-badge" style="display:none;"></span>
+                        </div>
+                    </div>
+
+                    <div class="seasons-header-row">
+                        <span class="label">Évadok és részek</span>
+                        <span id="seasons-summary-badge" class="seasons-badge" style="display:none;"></span>
+                    </div>
                     <div id="seasons-editor" class="seasons"></div>
                     <button type="button" id="add-season-btn" class="pill pill-light pill-sm">Új évad +</button>
                 </div>

@@ -1327,7 +1327,66 @@ select option { background: var(--night); color: var(--fg); }
     padding-bottom: var(--s-24);
 }
 
-/* Évadszerkesztő */
+/* Évadszerkesztő & Tömeges link beillesztő */
+.bulk-links-container {
+    margin-bottom: 16px;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px dashed var(--line);
+    border-radius: var(--r-md);
+}
+.bulk-field-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.label-hint {
+    font-size: 11px;
+    color: var(--fg-faint);
+    letter-spacing: 0.02em;
+}
+.bulk-actions-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 10px;
+}
+.bulk-status-badge {
+    font-size: 12px;
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.1);
+    border: 1px solid rgba(74, 222, 128, 0.25);
+    padding: 4px 10px;
+    border-radius: var(--r-xs);
+}
+.bulk-status-badge.error {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.1);
+    border-color: rgba(248, 113, 113, 0.25);
+}
+.btn-clear-bulk {
+    font-size: 12px;
+    cursor: pointer;
+}
+.seasons-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 14px;
+    margin-bottom: 6px;
+}
+.seasons-badge {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid var(--line);
+    color: var(--fg);
+}
 .seasons { display: flex; flex-direction: column; gap: 12px; margin: 12px 0; }
 .season-block {
     display: flex; flex-direction: column; gap: 10px;

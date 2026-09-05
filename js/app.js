@@ -715,6 +715,11 @@ class App {
         document.getElementById('add-torrent-fab')?.addEventListener('click', () => this.openAddModal());
         document.getElementById('add-category')?.addEventListener('change', () => this.updateStreamFormByCategory());
         document.getElementById('add-season-btn')?.addEventListener('click', () => this.addSeasonBlock());
+        document.getElementById('btn-parse-series-links')?.addEventListener('click', () => this.handleBulkSeriesLinks(true));
+        document.getElementById('btn-clear-bulk-links')?.addEventListener('click', () => this.clearBulkSeriesLinks());
+        document.getElementById('add-series-bulk-links')?.addEventListener('paste', () => {
+            setTimeout(() => this.handleBulkSeriesLinks(true), 60);
+        });
         document.getElementById('add-form')?.addEventListener('submit', async (e) => {
             e.preventDefault();
             await this.handleAddTorrent();
@@ -1456,21 +1461,315 @@ class App {
             film.style.display = 'none';
             series.style.display = 'block';
             const editor = document.getElementById('seasons-editor');
-            if (editor && !editor.children.length) this.addSeasonBlock();
+            if (editor && !editor.children.length) this.addSeasonBlock(null, 1);
         } else {
             film.style.display = 'block';
             series.style.display = 'none';
         }
     }
 
-    addSeasonBlock(episodes = null) {
+    /* --- Intelligens Streamtape link felismerő algoritmus --- */
+    parseStreamtapeLinks(rawText) {
+        if (!rawText || !rawText.trim()) return [];
+
+        const lines = rawText.split(/\r?\n/);
+        let currentSeason = 1;
+        const autoEpisodeBySeason = {};
+        const items = [];
+
+        function safeDecode(str) {
+            try {
+                return decodeURIComponent(str);
+            } catch {
+                return str;
+            }
+        }
+
+        function matchSeasonHeader(line) {
+            const trimmed = line.trim();
+            const sMatch = trimmed.match(/^(?:==+|\*\*+|##+)?\s*(?:(?:(\d{1,2})\.?\s*(?:évad|evad|season|s(?!\w)))|(?:(?:évad|evad|season|s)\s*(\d{1,2})))\s*:?\s*(?:==+|\*\*+|##+)?$/i);
+            if (sMatch) {
+                return parseInt(sMatch[1] || sMatch[2], 10);
+            }
+            return null;
+        }
+
+        function extractSeasonAndEpisode(text, urlStr, fallbackSeason) {
+            let season = null;
+            let episode = null;
+
+            let decodedUrl = '';
+            let filename = '';
+            try {
+                const parsedUrl = new URL(urlStr);
+                decodedUrl = safeDecode(parsedUrl.pathname);
+                const parts = decodedUrl.split('/');
+                filename = parts[parts.length - 1] || '';
+            } catch {
+                decodedUrl = safeDecode(urlStr);
+                const parts = decodedUrl.split('/');
+                filename = parts[parts.length - 1] || '';
+            }
+
+            const textWithoutUrl = text.replace(urlStr, ' ').trim();
+            const candidates = [textWithoutUrl, filename, decodedUrl];
+
+            // 1. S01E02, s1e02, S01.E02, S01 - E02
+            for (const str of candidates) {
+                if (!str) continue;
+                const seMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:s|season)?\.?\s*(\d{1,2})[._\s-]*[eE](?:p|pisode|izod|izód)?\.?\s*(\d{1,3})(?:[^a-zA-Z0-9]|$)/i);
+                if (seMatch) {
+                    season = parseInt(seMatch[1], 10);
+                    episode = parseInt(seMatch[2], 10);
+                    return { season, episode };
+                }
+            }
+
+            // 2. Magyar jelölések: "1. évad 2. rész", "1_evad_2_resz", "2.évad.1.rész"
+            for (const str of candidates) {
+                if (!str) continue;
+                const hunMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(\d{1,2})[._\s-]*(?:évad|evad)[._\s-]*(?:rész|resz|epizód|epizod|ep)?\.?[._\s-]*(\d{1,3})[._\s-]*(?:rész|resz|epizód|epizod|ep)?)(?:[^a-zA-Z0-9]|$)/i)
+                    || str.match(/(?:^|[^a-zA-Z0-9])(?:(?:évad|evad)[._\s-]*(\d{1,2})[._\s-]*(?:rész|resz|epizód|epizod|ep)[._\s-]*(\d{1,3}))(?:[^a-zA-Z0-9]|$)/i);
+                if (hunMatch) {
+                    season = parseInt(hunMatch[1], 10);
+                    episode = parseInt(hunMatch[2], 10);
+                    return { season, episode };
+                }
+            }
+
+            // 3. 1x02, 01x02 (felbontások mint 1920x1080 kizárásával)
+            for (const str of candidates) {
+                if (!str) continue;
+                const xMatch = str.match(/(?:^|[^a-zA-Z0-9])(\d{1,2})[xX](\d{1,3})(?:[^a-zA-Z0-9]|$)/);
+                if (xMatch) {
+                    const s = parseInt(xMatch[1], 10);
+                    const e = parseInt(xMatch[2], 10);
+                    if (s < 100 && e < 500) {
+                        season = s;
+                        episode = e;
+                        return { season, episode };
+                    }
+                }
+            }
+
+            // 4. Különálló évad jelölés
+            for (const str of candidates) {
+                if (!str || season !== null) continue;
+                const sMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,2})[._\s-]*(?:évad|evad|season))|(?:(?:évad|evad|season)[._\s-]*(\d{1,2})))(?:[^a-zA-Z0-9]|$)/i)
+                    || str.match(/(?:^|[^a-zA-Z0-9])[sS](\d{1,2})(?:[^a-zA-Z0-9]|$)/);
+                if (sMatch) {
+                    season = parseInt(sMatch[1] || sMatch[2], 10);
+                }
+            }
+
+            // 5. Különálló rész jelölés
+            for (const str of candidates) {
+                if (!str || episode !== null) continue;
+                const eMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,3})[._\s-]*(?:rész|resz|epizód|epizod|ep))|(?:(?:rész|resz|epizód|epizod|episode|ep)[._\s-]*(\d{1,3})))(?:[^a-zA-Z0-9]|$)/i)
+                    || str.match(/(?:^|[^a-zA-Z0-9])[eE](\d{1,3})(?:[^a-zA-Z0-9]|$)/);
+                if (eMatch) {
+                    episode = parseInt(eMatch[1] || eMatch[2], 10);
+                }
+            }
+
+            // 6. Fájlnév számozás (pl. "Bleach_-_01_[1080p].mp4" vagy "Naruto.05.mp4")
+            if (episode === null && filename) {
+                const fnMatch = filename.match(/[._\s-–]0*(\d{1,3})(?:v\d)?\s*(?:\.(?:mp4|mkv|avi|webm)|[._\s-–](?:1080p|720p|480p|hdtv|web-dl|bluray|x264|x265|hevc))/i);
+                if (fnMatch) {
+                    episode = parseInt(fnMatch[1], 10);
+                }
+            }
+
+            if (season === null) {
+                season = fallbackSeason || 1;
+            }
+
+            return { season, episode };
+        }
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line) continue;
+
+            const sHeader = matchSeasonHeader(line);
+            if (sHeader !== null) {
+                currentSeason = sHeader;
+                continue;
+            }
+
+            const urlRegex = /(https?:\/\/[^\s"'<>]+)/g;
+            const matchedUrls = line.match(urlRegex);
+
+            if (matchedUrls && matchedUrls.length > 0) {
+                for (const url of matchedUrls) {
+                    const cleanUrl = url.replace(/[.,;:!?)\]]+$/, '');
+                    const { season, episode } = extractSeasonAndEpisode(line, cleanUrl, currentSeason);
+                    const finalSeason = season || currentSeason;
+
+                    if (!autoEpisodeBySeason[finalSeason]) {
+                        autoEpisodeBySeason[finalSeason] = 0;
+                    }
+
+                    let finalEpisode = episode;
+                    if (finalEpisode === null || isNaN(finalEpisode)) {
+                        autoEpisodeBySeason[finalSeason] += 1;
+                        finalEpisode = autoEpisodeBySeason[finalSeason];
+                    } else {
+                        autoEpisodeBySeason[finalSeason] = Math.max(autoEpisodeBySeason[finalSeason], finalEpisode);
+                    }
+
+                    items.push({
+                        season: finalSeason,
+                        episode: finalEpisode,
+                        url: cleanUrl
+                    });
+                }
+            }
+        }
+
+        if (items.length === 0) {
+            const allUrls = rawText.match(/(https?:\/\/[^\s"'<>]+)/g);
+            if (allUrls) {
+                allUrls.forEach((u, i) => {
+                    const cleanUrl = u.replace(/[.,;:!?)\]]+$/, '');
+                    const { season, episode } = extractSeasonAndEpisode('', cleanUrl, 1);
+                    items.push({
+                        season: season || 1,
+                        episode: episode || (i + 1),
+                        url: cleanUrl
+                    });
+                });
+            }
+        }
+
+        const seasonMap = {};
+        const seenUrls = new Set();
+
+        for (const item of items) {
+            if (seenUrls.has(item.url)) continue;
+            seenUrls.add(item.url);
+
+            if (!seasonMap[item.season]) {
+                seasonMap[item.season] = {};
+            }
+            seasonMap[item.season][item.episode] = item.url;
+        }
+
+        const sortedSeasons = Object.keys(seasonMap)
+            .map(Number)
+            .sort((a, b) => a - b)
+            .map(sNum => {
+                const epMap = seasonMap[sNum];
+                const sortedEpisodes = Object.keys(epMap)
+                    .map(Number)
+                    .sort((a, b) => a - b)
+                    .map(eNum => ({
+                        ep: eNum,
+                        url: epMap[eNum]
+                    }));
+                return {
+                    season: sNum,
+                    episodes: sortedEpisodes
+                };
+            });
+
+        return sortedSeasons;
+    }
+
+    handleBulkSeriesLinks(notify = true) {
+        const textarea = document.getElementById('add-series-bulk-links');
+        const statusEl = document.getElementById('bulk-parse-status');
+        const clearBtn = document.getElementById('btn-clear-bulk-links');
+        if (!textarea) return;
+
+        const raw = textarea.value.trim();
+        if (!raw) {
+            if (statusEl) statusEl.style.display = 'none';
+            if (clearBtn) clearBtn.style.display = 'none';
+            return;
+        }
+
+        if (clearBtn) clearBtn.style.display = 'inline-block';
+
+        const parsedSeasons = this.parseStreamtapeLinks(raw);
+        if (!parsedSeasons.length) {
+            if (statusEl) {
+                statusEl.textContent = 'Nem található érvényes link a megadott szövegben.';
+                statusEl.className = 'bulk-status-badge error';
+                statusEl.style.display = 'inline-block';
+            }
+            if (notify) UI.toast('Nem található érvényes link.', 'error');
+            return;
+        }
+
+        const editor = document.getElementById('seasons-editor');
+        if (editor) editor.innerHTML = '';
+
+        parsedSeasons.forEach(s => {
+            this.addSeasonBlock(s.episodes, s.season);
+        });
+
+        const totalEps = parsedSeasons.reduce((acc, s) => acc + s.episodes.length, 0);
+        const seasonCount = parsedSeasons.length;
+
+        if (statusEl) {
+            statusEl.textContent = `✅ Felismerve: ${seasonCount} évad, ${totalEps} rész!`;
+            statusEl.className = 'bulk-status-badge';
+            statusEl.style.display = 'inline-block';
+        }
+
+        this.updateSeasonsSummaryBadge();
+
+        if (notify) {
+            UI.toast(`Sikeres felismerés: ${seasonCount} évad, ${totalEps} rész betöltve!`, 'success');
+        }
+    }
+
+    clearBulkSeriesLinks() {
+        const textarea = document.getElementById('add-series-bulk-links');
+        const statusEl = document.getElementById('bulk-parse-status');
+        const clearBtn = document.getElementById('btn-clear-bulk-links');
+        if (textarea) textarea.value = '';
+        if (statusEl) statusEl.style.display = 'none';
+        if (clearBtn) clearBtn.style.display = 'none';
+    }
+
+    updateSeasonsSummaryBadge() {
+        const badge = document.getElementById('seasons-summary-badge');
+        if (!badge) return;
+        const blocks = document.querySelectorAll('#seasons-editor .season-block');
+        if (!blocks.length) {
+            badge.style.display = 'none';
+            return;
+        }
+        let totalEps = 0;
+        blocks.forEach(b => {
+            totalEps += b.querySelectorAll('.ep-row').length;
+        });
+        badge.textContent = `${blocks.length} évad · ${totalEps} rész`;
+        badge.style.display = 'inline-block';
+    }
+
+    renumberSeasonsAndEpisodes() {
+        document.querySelectorAll('#seasons-editor .season-block').forEach((block, i) => {
+            const sNum = i + 1;
+            block.dataset.season = sNum;
+            const label = block.querySelector('.season-label');
+            if (label) label.textContent = `${sNum}. évad`;
+        });
+        this.updateSeasonsSummaryBadge();
+    }
+
+    addSeasonBlock(episodes = null, seasonNum = null) {
         const editor = document.getElementById('seasons-editor');
         if (!editor) return;
         const block = document.createElement('div');
         block.className = 'season-block';
+        const sNum = seasonNum || (editor.children.length + 1);
+        block.dataset.season = sNum;
         block.innerHTML = `
             <div class="season-head">
-                <span class="label season-label">${editor.children.length + 1}. évad</span>
+                <span class="label season-label">${sNum}. évad</span>
                 <button type="button" class="icon-x btn-remove-season" title="Évad törlése">✕</button>
             </div>
             <div class="episodes-editor"></div>
@@ -1478,32 +1777,44 @@ class App {
         editor.appendChild(block);
 
         const list = block.querySelector('.episodes-editor');
-        if (episodes?.length) episodes.forEach(ep => this.addEpisodeRow(list, ep.url));
-        else this.addEpisodeRow(list);
+        if (episodes?.length) {
+            episodes.forEach((ep, i) => this.addEpisodeRow(list, ep.url, ep.ep || (i + 1)));
+        } else {
+            this.addEpisodeRow(list);
+        }
 
         block.querySelector('.btn-remove-season').addEventListener('click', () => {
             block.remove();
-            document.querySelectorAll('#seasons-editor .season-label').forEach((l, i) => l.textContent = `${i + 1}. évad`);
+            this.renumberSeasonsAndEpisodes();
         });
         block.querySelector('.btn-add-ep').addEventListener('click', () => {
             this.addEpisodeRow(list)?.querySelector('.ep-url')?.focus();
+            this.updateSeasonsSummaryBadge();
         });
+        this.updateSeasonsSummaryBadge();
     }
 
-    addEpisodeRow(listEl, url = '') {
+    addEpisodeRow(listEl, url = '', epNum = null) {
         if (!listEl) return null;
         const row = document.createElement('div');
         row.className = 'ep-row';
+        const eNum = epNum || (listEl.children.length + 1);
+        row.dataset.ep = eNum;
         row.innerHTML = `
-            <span class="ep-num">${String(listEl.children.length + 1).padStart(2, '0')}</span>
+            <span class="ep-num">${String(eNum).padStart(2, '0')}</span>
             <input type="text" class="ep-url" placeholder="https://streamtape.com/v/…" value="${esc(url)}">
             <button type="button" class="icon-x btn-remove-ep" title="Törlés">✕</button>`;
         listEl.appendChild(row);
         row.querySelector('.btn-remove-ep').addEventListener('click', () => {
             row.remove();
-            listEl.querySelectorAll('.ep-row').forEach((r, i) =>
-                r.querySelector('.ep-num').textContent = String(i + 1).padStart(2, '0'));
+            listEl.querySelectorAll('.ep-row').forEach((r, i) => {
+                const newEp = i + 1;
+                r.dataset.ep = newEp;
+                r.querySelector('.ep-num').textContent = String(newEp).padStart(2, '0');
+            });
+            this.updateSeasonsSummaryBadge();
         });
+        this.updateSeasonsSummaryBadge();
         return row;
     }
 
@@ -1511,11 +1822,13 @@ class App {
         const seasons = [];
         document.querySelectorAll('#seasons-editor .season-block').forEach((block, sIdx) => {
             const episodes = [];
+            const seasonNum = parseInt(block.dataset.season, 10) || (sIdx + 1);
             block.querySelectorAll('.ep-row').forEach((row, eIdx) => {
                 const url = (row.querySelector('.ep-url')?.value || '').trim();
-                if (url) episodes.push({ ep: eIdx + 1, url });
+                const epNum = parseInt(row.dataset.ep, 10) || (eIdx + 1);
+                if (url) episodes.push({ ep: epNum, url });
             });
-            if (episodes.length) seasons.push({ season: sIdx + 1, episodes });
+            if (episodes.length) seasons.push({ season: seasonNum, episodes });
         });
         return seasons;
     }
@@ -1529,7 +1842,9 @@ class App {
         if (editor) editor.innerHTML = '';
         const preview = document.getElementById('cover-preview');
         if (preview) preview.hidden = true;
+        this.clearBulkSeriesLinks();
         this.updateStreamFormByCategory();
+        this.updateSeasonsSummaryBadge();
     }
 
     openEditModal(torrentId) {
@@ -1552,12 +1867,14 @@ class App {
 
         this.updateStreamFormByCategory();
 
+        this.clearBulkSeriesLinks();
         if (t.category === 'Sorozat') {
             const editor = document.getElementById('seasons-editor');
             if (editor) editor.innerHTML = '';
-            if (t.seasons?.length) t.seasons.forEach(s => this.addSeasonBlock(s.episodes));
-            else if (t.episodes?.length) this.addSeasonBlock(t.episodes);
-            else this.addSeasonBlock();
+            if (t.seasons?.length) t.seasons.forEach((s, idx) => this.addSeasonBlock(s.episodes, s.season || (idx + 1)));
+            else if (t.episodes?.length) this.addSeasonBlock(t.episodes, 1);
+            else this.addSeasonBlock(null, 1);
+            this.updateSeasonsSummaryBadge();
         } else if (t.streamUrl) {
             document.getElementById('add-stream').value = t.streamUrl;
         }
