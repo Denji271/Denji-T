@@ -6,6 +6,11 @@
 const KEY_FAVS = 'denjit_favs';
 const KEY_RECENT = 'denjit_recent';
 const KEY_WATCH = 'denjit_watch';
+// A Streamtape get_video tokenjei időkorlátosak, ezért rövid életű a gyorsítótár.
+const STREAM_CACHE_TTL = 5 * 60 * 1000;
+const YOUTUBE_ID_RE = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
+// Az űrlapra bemásolt szövegből a linkeket, illetve a köréjük került írásjeleket szedi ki
+const URL_RE = /(https?:\/\/[^\s"'<>]+)/g;
 
 class App {
     constructor() {
@@ -13,7 +18,7 @@ class App {
         this.filteredTorrents = [];
         this.currentFilters = {
             search: '',
-            categories: new Set(['Játék', 'Film', 'Sorozat']),
+            categories: new Set(CONFIG.CATEGORIES),
             sort: 'date-new',
             view: 'all'
         };
@@ -22,13 +27,15 @@ class App {
         this.watch = Store.get(KEY_WATCH, {});
         this.cmdkItems = [];
         this.cmdkIndex = 0;
+        // Reklámmentes lejátszás: feloldott linkek gyorsítótára + versenyhelyzet-védelem
+        this._streamCache = new Map();
+        this._playToken = 0;
     }
 
     /* ============================================================
        INDÍTÁS
        ============================================================ */
     async init() {
-        Prefs.load();
         this.measureScrollbar();
         window.addEventListener('resize', debounce(() => this.measureScrollbar(), 200));
         this.bindEvents();
@@ -97,7 +104,6 @@ class App {
 
         UI.progress(true);
         try {
-            await driveAPI.init();
             this.torrents = await driveAPI.loadAllTorrents();
             this.applyFilters();
             this.setStatus(`Szinkronizálva · ${new Date().toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })}`);
@@ -152,11 +158,7 @@ class App {
        SZŰRÉS
        ============================================================ */
     applyFilters() {
-        let results = [...this.torrents];
-
-        const is7777 = is7777User();
-        if (is7777) results = results.filter(t => !!t.isMagyar);
-        else if (!isAdmin()) results = results.filter(t => !t.isMagyar);
+        let results = this.visibleLibrary();
 
         if (this.currentFilters.view === 'fav') {
             results = results.filter(t => this.favs.has(t.id));
@@ -191,20 +193,33 @@ class App {
         this.renderContinue();
     }
 
+    /* A 7777-es kód csak a magyar tartalmakat látja, a vendégek csak a nem magyarokat.
+       Mindig új tömböt ad vissza, így a hívó nyugodtan rendezheti. */
     visibleLibrary() {
         if (is7777User()) return this.torrents.filter(t => !!t.isMagyar);
         if (!isAdmin()) return this.torrents.filter(t => !t.isMagyar);
-        return this.torrents;
+        return [...this.torrents];
     }
 
     renderCounts() {
         const lib = this.visibleLibrary();
+        const recentIds = new Set(this.recent.map(r => r.id));
+        const byCategory = new Map(CONFIG.CATEGORIES.map(c => [c, 0]));
+        let favs = 0;
+        let recent = 0;
+
+        for (const t of lib) {
+            if (this.favs.has(t.id)) favs++;
+            if (recentIds.has(t.id)) recent++;
+            if (byCategory.has(t.category)) byCategory.set(t.category, byCategory.get(t.category) + 1);
+        }
+
         const set = (key, val) => document.querySelectorAll(`[data-count="${key}"]`).forEach(el => el.textContent = val);
         set('all', lib.length);
-        set('fav', lib.filter(t => this.favs.has(t.id)).length);
-        set('recent', lib.filter(t => this.recent.some(r => r.id === t.id)).length);
+        set('fav', favs);
+        set('recent', recent);
 
-        const cats = ['Játék', 'Film', 'Sorozat'].map(c => `${c} ${lib.filter(t => t.category === c).length}`);
+        const cats = CONFIG.CATEGORIES.map(c => `${c} ${byCategory.get(c)}`);
         this.setText('hero-meta', `${lib.length} tartalom — ${cats.join(' · ')}`);
     }
 
@@ -224,7 +239,7 @@ class App {
         if (this.currentFilters.search) {
             pills.push(`<button class="tag-pill" data-clear="search">„${esc(this.currentFilters.search)}” ✕</button>`);
         }
-        ['Játék', 'Film', 'Sorozat'].forEach(cat => {
+        CONFIG.CATEGORIES.forEach(cat => {
             if (!this.currentFilters.categories.has(cat)) {
                 pills.push(`<button class="tag-pill" data-clear="cat" data-cat="${cat}">${cat} rejtve ✕</button>`);
             }
@@ -284,7 +299,7 @@ class App {
         const targets = [...scope.querySelectorAll('.rv:not(.in)')];
         if (!targets.length) return;
 
-        if (Prefs.get('motion') === 'reduced' || typeof IntersectionObserver === 'undefined') {
+        if (prefersReducedMotion() || typeof IntersectionObserver === 'undefined') {
             targets.forEach(el => el.classList.add('in'));
             return;
         }
@@ -572,16 +587,12 @@ class App {
         document.getElementById('refresh-btn')?.addEventListener('click', () => this.refresh());
         document.getElementById('menu-refresh')?.addEventListener('click', () => { UI.closeAllPops(); this.refresh(); });
         document.getElementById('cmdk-btn')?.addEventListener('click', () => this.openCmdk());
-        document.getElementById('user-chip')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            UI.togglePop(document.getElementById('user-pop'));
+        ['user-chip', 'mobile-menu-btn'].forEach(id => {
+            document.getElementById(id)?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                UI.togglePop(document.getElementById('user-pop'));
+            });
         });
-        document.getElementById('mobile-menu-btn')?.addEventListener('click', (e) => {
-            e.stopPropagation();
-            UI.togglePop(document.getElementById('user-pop'));
-        });
-
-
 
         /* --- Szűrők --- */
         document.getElementById('category-filters')?.addEventListener('click', (e) => {
@@ -612,10 +623,7 @@ class App {
             onSearch();
         });
         document.getElementById('search-clear')?.addEventListener('click', () => {
-            searchInput.value = '';
-            document.getElementById('search-clear').hidden = true;
-            this.currentFilters.search = '';
-            this.applyFilters();
+            this.clearSearch();
             searchInput.focus();
         });
 
@@ -628,10 +636,7 @@ class App {
             const btn = e.target.closest('[data-clear]');
             if (!btn) return;
             if (btn.dataset.clear === 'search') {
-                document.getElementById('search-input').value = '';
-                document.getElementById('search-clear').hidden = true;
-                this.currentFilters.search = '';
-                this.applyFilters();
+                this.clearSearch();
             } else if (btn.dataset.clear === 'cat') {
                 this.currentFilters.categories.add(btn.dataset.cat);
                 document.querySelector(`.cat-link[data-category="${btn.dataset.cat}"]`)?.classList.add('active');
@@ -706,7 +711,6 @@ class App {
                 const host = btn.closest('.takeover, .sheet');
                 if (!host) return;
                 if (host.id === 'detail-modal') this.closeDetail();
-                else if (host.id === 'stream-modal') this.closeStreamModal();
                 else UI.closeModal(host);
             });
         });
@@ -747,7 +751,8 @@ class App {
         /* --- Görgetés --- */
         const scrollTop = document.getElementById('scroll-top');
         const progressBar = document.querySelector('#scroll-progress span');
-        window.addEventListener('scroll', () => {
+        // Képkockánként egyszer fut le: a görgetés így akkor is sima marad, ha sok kártya van kint
+        window.addEventListener('scroll', rafThrottle(() => {
             scrollTop?.classList.toggle('on', window.scrollY > 700);
             this.updateHeaderTone();
             this.revealInView();
@@ -755,7 +760,7 @@ class App {
                 const max = document.documentElement.scrollHeight - window.innerHeight;
                 progressBar.style.transform = `scaleX(${max > 0 ? Math.min(1, window.scrollY / max) : 0})`;
             }
-        }, { passive: true });
+        }), { passive: true });
         scrollTop?.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
 
         window.addEventListener('resize', debounce(() => this.syncNavPlacement(), 200));
@@ -815,18 +820,20 @@ class App {
         UI.closeAllPops();
     }
 
-    setLayout(layout) {
-        Prefs.set('layout', layout);
-        this.renderGrid();
+    /* A keresőmező kiürítése — a törlés gomb és a szűrőcímke is ezt hívja */
+    clearSearch({ rerender = true } = {}) {
+        const input = document.getElementById('search-input');
+        if (input) input.value = '';
+        const clearBtn = document.getElementById('search-clear');
+        if (clearBtn) clearBtn.hidden = true;
+        this.currentFilters.search = '';
+        if (rerender) this.applyFilters();
     }
 
     resetFilters() {
-        this.currentFilters.search = '';
-        this.currentFilters.categories = new Set(['Játék', 'Film', 'Sorozat']);
+        this.clearSearch({ rerender: false });
+        this.currentFilters.categories = new Set(CONFIG.CATEGORIES);
         this.currentFilters.view = 'all';
-        const s = document.getElementById('search-input');
-        if (s) s.value = '';
-        document.getElementById('search-clear').hidden = true;
         document.querySelectorAll('.cat-link').forEach(b => b.classList.add('active'));
         document.querySelectorAll('#view-nav .ctrl-link').forEach(b => b.classList.toggle('active', b.dataset.view === 'all'));
         this.applyFilters();
@@ -854,7 +861,6 @@ class App {
                 const open = document.querySelector('.sheet.active, .takeover.active');
                 if (open) {
                     if (open.id === 'detail-modal') this.closeDetail();
-                    else if (open.id === 'stream-modal') this.closeStreamModal();
                     else UI.closeModal(open);
                     return;
                 }
@@ -942,14 +948,14 @@ class App {
         }
 
         const actions = [
-            { title: 'Könyvtár frissítése', sub: '', run: () => { this.closeCmdk(); this.refresh(); } },
-            { title: 'Mentett tételek', sub: '', run: () => { this.closeCmdk(); this.setView('fav'); } },
-            { title: 'Folytatás', sub: '', run: () => { this.closeCmdk(); this.setView('recent'); } },
-            { title: 'Kijelentkezés', sub: '', run: () => logout() }
+            { title: 'Könyvtár frissítése', run: () => { this.closeCmdk(); this.refresh(); } },
+            { title: 'Mentett tételek', run: () => { this.closeCmdk(); this.setView('fav'); } },
+            { title: 'Folytatás', run: () => { this.closeCmdk(); this.setView('recent'); } },
+            { title: 'Kijelentkezés', run: () => logout() }
         ];
         if (isAdmin()) {
-            actions.unshift({ title: 'Új tartalom', sub: '', run: () => { this.closeCmdk(); this.openAddModal(); } });
-            actions.push({ title: 'Belépési kódok', sub: '', run: () => { this.closeCmdk(); this.renderPasscodeList(); UI.openModal('passcode-modal'); } });
+            actions.unshift({ title: 'Új tartalom', run: () => { this.closeCmdk(); this.openAddModal(); } });
+            actions.push({ title: 'Belépési kódok', run: () => { this.closeCmdk(); this.renderPasscodeList(); UI.openModal('passcode-modal'); } });
         }
 
         const matched = actions.filter(a => !q || a.title.toLowerCase().includes(q));
@@ -959,7 +965,6 @@ class App {
                 this.cmdkItems.push(a);
                 return `<button class="cmdk-item ${idx === 0 ? 'sel' : ''}" data-idx="${idx++}">
                     <span>${esc(a.title)}</span>
-                    ${a.sub ? `<kbd>${esc(a.sub)}</kbd>` : ''}
                 </button>`;
             }).join('');
         }
@@ -1105,6 +1110,33 @@ class App {
         return u;
     }
 
+    /* --- Reklámmentes lejátszás ------------------------------------------
+       A Streamtape beágyazott lejátszója tele van reklámmal, ezért a szerver
+       /api/resolve_stream végpontjával kiszedjük a közvetlen videólinket, és
+       a saját <video> elemünkben játsszuk le. Ha bármi hibázik, visszaesünk
+       az eredeti iframe-es beágyazásra. */
+
+    isStreamtape(url) {
+        return /streamtape\.com\/(?:v|e|r)\//i.test(url || '');
+    }
+
+    async resolveStream(url) {
+        const hit = this._streamCache.get(url);
+        if (hit && Date.now() - hit.at < STREAM_CACHE_TTL) return hit.proxy;
+
+        const res = await fetch(`/api/resolve_stream?url=${encodeURIComponent(url)}`);
+        if (!res.ok) throw new Error(`resolve_stream HTTP ${res.status}`);
+        const data = await res.json();
+        if (!data.proxy) throw new Error('a szerver nem talált közvetlen linket');
+
+        this._streamCache.set(url, { proxy: data.proxy, at: Date.now() });
+        return data.proxy;
+    }
+
+    setStageLoading(box, on) {
+        box?.classList.toggle('stage-loading', !!on);
+    }
+
     renderMediaTabs() {
         const tabs = document.getElementById('cinema-server-tabs');
         const stage = document.getElementById('cinema-hero-stage');
@@ -1179,36 +1211,74 @@ class App {
         this.renderContinue();
     }
 
+    /* A lejátszók leállítása — enélkül az iframe a bezárás után is szólna tovább */
+    stopVideo(video) {
+        if (!video) return;
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+        video.style.display = 'none';
+    }
+
+    stopIframe(iframe) {
+        if (!iframe) return;
+        iframe.src = 'about:blank';
+        iframe.removeAttribute('src');
+        iframe.style.display = 'none';
+    }
+
     clearPlayers() {
-        const iframe = document.getElementById('cinema-player-iframe');
-        const video = document.getElementById('cinema-player-video');
-        if (iframe) {
-            iframe.src = 'about:blank';
-            iframe.removeAttribute('src');
-            iframe.style.display = 'none';
-        }
-        if (video) {
-            video.pause();
-            video.removeAttribute('src');
-            video.load();
-            video.style.display = 'none';
-        }
+        this._playToken++;   // a még futó feloldások eredményét eldobjuk
+        this.stopIframe(document.getElementById('cinema-player-iframe'));
+        this.stopVideo(document.getElementById('cinema-player-video'));
     }
 
     playEmbed(url) {
-        const iframe = document.getElementById('cinema-player-iframe');
-        const video = document.getElementById('cinema-player-video');
-        const placeholder = document.getElementById('cinema-player-placeholder');
-        if (video) {
-            video.pause();
-            video.removeAttribute('src');
-            video.style.display = 'none';
-        }
-        if (iframe) {
+        this.mountStream(url, {
+            box: 'cinema-player-wrapper',
+            iframe: 'cinema-player-iframe',
+            video: 'cinema-player-video',
+            placeholder: 'cinema-player-placeholder'
+        });
+    }
+
+    /* Betölti az URL-t a megadott lejátszóba: Streamtape esetén feloldva a
+       natív <video>-ba, minden másnál (pl. YouTube) a beágyazott iframe-be. */
+    mountStream(url, ids) {
+        const box = document.getElementById(ids.box);
+        const iframe = ids.iframe ? document.getElementById(ids.iframe) : null;
+        const video = ids.video ? document.getElementById(ids.video) : null;
+        const placeholder = ids.placeholder ? document.getElementById(ids.placeholder) : null;
+        const token = ++this._playToken;
+
+        this.stopVideo(video);
+        if (placeholder) placeholder.style.display = 'none';
+
+        const useIframe = () => {
+            if (!iframe) return;
             iframe.src = this.embedUrl(url);
             iframe.style.display = 'block';
-        }
-        if (placeholder) placeholder.style.display = 'none';
+        };
+
+        if (!video || !this.isStreamtape(url)) return useIframe();
+
+        // Natív útvonal: az iframe-et leállítjuk, nehogy a háttérben szóljon.
+        this.stopIframe(iframe);
+
+        this.setStageLoading(box, true);
+        this.resolveStream(url).then(proxyUrl => {
+            if (token !== this._playToken) return;   // közben másik részre váltott
+            video.src = proxyUrl;
+            video.style.display = 'block';
+            video.play().catch(() => {});            // autoplay tiltás esetén csendben marad
+        }).catch(err => {
+            if (token !== this._playToken) return;
+            console.warn('Stream feloldás sikertelen, marad a beágyazott lejátszó:', err);
+            UI.toast('A reklámmentes lejátszás nem sikerült, beágyazott lejátszó indul.', 'info', 3000);
+            useIframe();
+        }).finally(() => {
+            if (token === this._playToken) this.setStageLoading(box, false);
+        });
     }
 
     /* ---- Sorozat ---- */
@@ -1313,56 +1383,21 @@ class App {
                        (this.currentSeasonIndex + 1 < this.currentSeasons.length));
     }
 
-    openStreamModal(idOrUrl) {
-        let url = '';
-        let title = 'Lejátszás';
-        if (typeof idOrUrl === 'string' && idOrUrl.startsWith('http')) {
-            url = idOrUrl;
-        } else {
-            const t = this.torrents.find(x => x.id === idOrUrl);
-            if (t) {
-                if (t.seasons?.length || t.episodes?.length) return this.openDetail(t.id);
-                title = t.title;
-                url = t.streamUrl || '';
-            }
-        }
-        if (!url) return UI.toast('Nincs elérhető stream link.', 'error');
-        this.setText('stream-modal-title', title);
-        document.getElementById('stream-player-iframe').src = this.embedUrl(url);
-        UI.openModal('stream-modal');
-    }
-
-    closeStreamModal() {
-        const iframe = document.getElementById('stream-player-iframe');
-        if (iframe) {
-            iframe.src = 'about:blank';
-            iframe.removeAttribute('src');
-        }
-        UI.closeModal('stream-modal');
-    }
-
     /* ============================================================
        LETÖLTÉS
        ============================================================ */
-    async openMagnet(idOrLink) {
-        if (!idOrLink) return;
-        let magnet = '';
-        let torrent = null;
+    async openMagnet(torrentId) {
+        const torrent = this.torrents.find(t => t.id === torrentId);
+        if (!torrent) return;
+        let magnet = torrent.magnetLink || '';
 
-        if (typeof idOrLink === 'string' && idOrLink.startsWith('magnet:?')) {
-            magnet = idOrLink.trim();
-        } else {
-            torrent = this.torrents.find(t => t.id === idOrLink);
-            magnet = torrent?.magnetLink || '';
-        }
-
-        if (!magnet && torrent?.magnetFileId) {
+        // A magnet.txt tartalmát csak akkor olvassuk be, ha a listázáskor még nem érkezett meg
+        if (!magnet && torrent.magnetFileId) {
             UI.toast('Magnet beolvasása…', 'info', 1800);
             try {
                 const text = await driveAPI.readTextFile(torrent.magnetFileId, torrent.title);
                 if (text?.includes('magnet:?')) {
-                    const m = text.match(/magnet:\?xt=urn:[^\s"']+/i);
-                    magnet = m ? m[0] : text.trim();
+                    magnet = text.match(MAGNET_RE)?.[0] || text.trim();
                     torrent.magnetLink = magnet;
                 }
             } catch (e) {
@@ -1370,15 +1405,11 @@ class App {
             }
         }
 
-        if (magnet.startsWith('magnet:?')) {
-            if (!magnet.toLowerCase().includes('&dn=') && torrent?.title) {
-                magnet += `&dn=${encodeURIComponent(torrent.title)}`;
-            }
-            window.location.href = magnet;
-            UI.toast('Magnet átadva a torrent kliensnek.', 'success', 2600);
-        } else {
-            UI.toast('Nem található érvényes magnet link.', 'error');
+        if (!magnet.startsWith('magnet:?')) {
+            return UI.toast('Nem található érvényes magnet link.', 'error');
         }
+        window.location.href = withDisplayName(magnet, torrent.title);
+        UI.toast('Magnet átadva a torrent kliensnek.', 'success', 2600);
     }
 
     downloadTorrent(fileId, fileName) {
@@ -1394,18 +1425,7 @@ class App {
     }
 
     extractYouTubeId(url) {
-        if (!url) return null;
-        const patterns = [
-            /(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
-            /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
-            /(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})/,
-            /(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/
-        ];
-        for (const p of patterns) {
-            const m = url.match(p);
-            if (m) return m[1];
-        }
-        return null;
+        return url?.match(YOUTUBE_ID_RE)?.[1] || null;
     }
 
     /* ============================================================
@@ -1484,6 +1504,14 @@ class App {
             } catch {
                 return str;
             }
+        }
+
+        /* A linket körülvevő zárójelek, idézőjelek és írásjelek levágása */
+        function trimUrlPunctuation(url) {
+            let clean = url.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
+            if (clean.endsWith(')') && !clean.includes('(')) clean = clean.slice(0, -1);
+            if (clean.endsWith(']') && !clean.includes('[')) clean = clean.slice(0, -1);
+            return clean;
         }
 
         function matchSeasonHeader(line) {
@@ -1628,14 +1656,11 @@ class App {
                 continue;
             }
 
-            const urlRegex = /(https?:\/\/[^\s"'<>]+)/g;
-            const matchedUrls = line.match(urlRegex);
+            const matchedUrls = line.match(URL_RE);
 
             if (matchedUrls && matchedUrls.length > 0) {
                 for (const url of matchedUrls) {
-                    let cleanUrl = url.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
-                    if (cleanUrl.endsWith(')') && !cleanUrl.includes('(')) cleanUrl = cleanUrl.slice(0, -1);
-                    if (cleanUrl.endsWith(']') && !cleanUrl.includes('[')) cleanUrl = cleanUrl.slice(0, -1);
+                    const cleanUrl = trimUrlPunctuation(url);
 
                     const { season, episode } = extractSeasonAndEpisode(line, cleanUrl, currentSeason);
                     const finalSeason = season || currentSeason;
@@ -1662,13 +1687,10 @@ class App {
         }
 
         if (items.length === 0) {
-            const allUrls = rawText.match(/(https?:\/\/[^\s"'<>]+)/g);
+            const allUrls = rawText.match(URL_RE);
             if (allUrls) {
                 allUrls.forEach((u, i) => {
-                    let cleanUrl = u.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
-                    if (cleanUrl.endsWith(')') && !cleanUrl.includes('(')) cleanUrl = cleanUrl.slice(0, -1);
-                    if (cleanUrl.endsWith(']') && !cleanUrl.includes('[')) cleanUrl = cleanUrl.slice(0, -1);
-
+                    const cleanUrl = trimUrlPunctuation(u);
                     const { season, episode } = extractSeasonAndEpisode('', cleanUrl, 1);
                     items.push({
                         season: season || 1,
@@ -2093,11 +2115,6 @@ class App {
             UI.toast('A Drive szinkronizálás nem sikerült.', 'error');
         }
     }
-
-    /* Kompatibilitás */
-    showDetailModal(id) { this.openDetail(id); }
-    showToast(msg, type = 'info') { UI.toast(msg, type); }
-    showLoading(on) { UI.progress(on); }
 }
 
 const app = new App();

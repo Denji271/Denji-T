@@ -1,9 +1,9 @@
 import http.server
 import socketserver
 import urllib.request
+import urllib.parse
 import re
 import json
-import urllib.parse
 import os
 import ssl
 import traceback
@@ -14,9 +14,28 @@ DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 # Same API key as js/config.js
 API_KEY = "AIzaSyCNMU85XO9QAN81vv-0pinbbKT4cw79sT8"
 
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.0.0 Safari/537.36"
+)
+MAGNET_RE = re.compile(r'magnet:\?xt=urn:[^\s"\'<>]+', re.IGNORECASE)
+
+# A kliens megszakított kérései (AbortController) ezekkel a hibákkal jelentkeznek
+CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError)
+
 ssl_ctx = ssl.create_default_context()
 ssl_ctx.check_hostname = False
 ssl_ctx.verify_mode = ssl.CERT_NONE
+
+
+def http_get(url, timeout, extra_headers=None):
+    """Egyszerű GET böngésző User-Agenttel; a válaszobjektumot adja vissza."""
+    headers = {"User-Agent": BROWSER_UA}
+    if extra_headers:
+        headers.update(extra_headers)
+    req = urllib.request.Request(url, headers=headers)
+    return urllib.request.urlopen(req, context=ssl_ctx, timeout=timeout)
 
 
 class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
@@ -34,77 +53,60 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         super().end_headers()
 
-    def _safe_write(self, data: bytes):
-        """Write response body; ignore client disconnects."""
+    def _respond(self, status, body=b"", content_type=None, extra_headers=None):
+        """Teljes válasz egy lépésben; a megszakadt kapcsolatot csendben elnyeli."""
+        if isinstance(body, str):
+            body = body.encode("utf-8")
         try:
-            self.wfile.write(data)
-        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
+            self.send_response(status)
+            if content_type:
+                self.send_header("Content-Type", content_type)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            for key, value in (extra_headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(body)
+        except CLIENT_GONE:
+            pass
+        except Exception as e:
+            print(f"response error: {e}")
+
+    def _drive_text(self, file_id, meta_timeout=2.5, download_timeout=3):
+        """Drive szövegfájl tartalma: előbb a description metaadat, aztán a letöltés."""
+        try:
+            meta_url = (
+                f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                f"?fields=description&key={API_KEY}"
+            )
+            with http_get(meta_url, meta_timeout) as resp:
+                description = json.loads(resp.read().decode("utf-8")).get("description") or ""
+                if description.strip():
+                    return description.strip()
+        except Exception:
             pass
 
-    def _safe_end_headers(self):
         try:
-            self.end_headers()
-        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
-            pass
+            uc_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            with http_get(uc_url, download_timeout) as resp:
+                return resp.read().decode("utf-8", errors="ignore")
+        except Exception as e:
+            print(f"Drive uc fallback for {file_id}: {e}")
+            return ""
 
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed_path.query)
 
+        # ---- Szövegfájl (magnet, leírás, kategória…) a Drive-ról ----
         if parsed_path.path == "/api/read_text":
-            query_params = urllib.parse.parse_qs(parsed_path.query)
-            file_id = query_params.get("id", [None])[0]
-            torrent_title = query_params.get("title", [""])[0]
-
+            file_id = params.get("id", [None])[0]
+            torrent_title = params.get("title", [""])[0]
             if not file_id:
-                try:
-                    self.send_response(400)
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self._safe_end_headers()
-                    self._safe_write(b"Missing file id")
-                except Exception:
-                    pass
-                return
+                return self._respond(400, b"Missing file id")
 
-            text_content = ""
             try:
-                # 1) Metadata description via API key (fast, reliable)
-                meta_url = (
-                    f"https://www.googleapis.com/drive/v3/files/{file_id}"
-                    f"?fields=description&key={API_KEY}"
-                )
-                req_meta = urllib.request.Request(
-                    meta_url, headers={"User-Agent": "Mozilla/5.0"}
-                )
-                try:
-                    with urllib.request.urlopen(req_meta, context=ssl_ctx, timeout=2.5) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        if data.get("description"):
-                            text_content = data["description"].strip()
-                except Exception:
-                    pass
-
-                # 2) Fallback: direct download (only if description empty)
-                if not text_content:
-                    uc_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                    req = urllib.request.Request(
-                        uc_url,
-                        headers={
-                            "User-Agent": (
-                                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                "Chrome/120.0.0.0 Safari/537.36"
-                            )
-                        },
-                    )
-                    try:
-                        with urllib.request.urlopen(req, context=ssl_ctx, timeout=3) as response:
-                            text_content = response.read().decode("utf-8", errors="ignore")
-                    except Exception as e:
-                        print(f"Drive uc fallback for {file_id}: {e}")
-
-                match = re.search(
-                    r'magnet:\?xt=urn:[^\s"\'<>]+', text_content, re.IGNORECASE
-                )
+                text_content = self._drive_text(file_id)
+                match = MAGNET_RE.search(text_content)
                 result_text = match.group(0) if match else text_content.strip()
 
                 if (
@@ -113,148 +115,71 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
                     and torrent_title
                 ):
                     result_text += f"&dn={urllib.parse.quote(torrent_title)}"
-
-                try:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Cache-Control", "no-store")
-                    self._safe_end_headers()
-                    self._safe_write(result_text.encode("utf-8"))
-                except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError):
-                    # Client aborted (AbortController) – normal, ignore
-                    pass
-                return
-
-            except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-                return
             except Exception as e:
                 print(f"Drive text error for {file_id}: {e}")
-                try:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self._safe_end_headers()
-                    self._safe_write(b"")
-                except Exception:
-                    pass
-                return
+                result_text = ""
 
-        # ---- Subtitle file content (SRT/VTT) from Drive ----
-        if parsed_path.path == "/api/subtitle":
-            query_params = urllib.parse.parse_qs(parsed_path.query)
-            file_id = query_params.get("id", [None])[0]
-            if not file_id:
-                self.send_response(400)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self._safe_end_headers()
-                self._safe_write(b"Missing id")
-                return
-            text_content = ""
-            try:
-                # Prefer description (if small SRT was stored there)
-                meta_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?fields=description&key={API_KEY}"
-                req_meta = urllib.request.Request(meta_url, headers={"User-Agent": "Mozilla/5.0"})
-                try:
-                    with urllib.request.urlopen(req_meta, context=ssl_ctx, timeout=3) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                        if data.get("description") and len(data["description"]) > 20:
-                            text_content = data["description"]
-                except Exception:
-                    pass
-                # Fallback: direct download
-                if not text_content:
-                    uc_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                    req = urllib.request.Request(
-                        uc_url,
-                        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0"},
-                    )
-                    with urllib.request.urlopen(req, context=ssl_ctx, timeout=8) as response:
-                        text_content = response.read().decode("utf-8", errors="ignore")
-            except Exception as e:
-                print(f"Subtitle fetch error {file_id}: {e}")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Cache-Control", "no-store")
-            self._safe_end_headers()
-            self._safe_write(text_content.encode("utf-8"))
-            return
+            return self._respond(
+                200, result_text,
+                content_type="text/plain; charset=utf-8",
+                extra_headers={"Cache-Control": "no-store"},
+            )
 
         # ---- Resolve Streamtape → direct get_video URL ----
         if parsed_path.path == "/api/resolve_stream":
-            query_params = urllib.parse.parse_qs(parsed_path.query)
-            raw_url = query_params.get("url", [""])[0]
+            raw_url = params.get("url", [""])[0]
             if not raw_url:
-                self.send_response(400)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self._safe_end_headers()
-                self._safe_write(b"Missing url")
-                return
+                return self._respond(400, b"Missing url")
+
             direct = self._resolve_streamtape(raw_url)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self._safe_end_headers()
             # Client plays via our proxy to avoid CORS / referer issues
             play = f"/api/proxy_video?url={urllib.parse.quote(direct, safe='')}" if direct else None
-            self._safe_write(json.dumps({"url": direct or None, "proxy": play}).encode("utf-8"))
-            return
+            return self._respond(
+                200, json.dumps({"url": direct or None, "proxy": play}),
+                content_type="application/json; charset=utf-8",
+            )
 
         # ---- Proxy video bytes (Range support for seeking) ----
         if parsed_path.path == "/api/proxy_video":
-            query_params = urllib.parse.parse_qs(parsed_path.query)
-            target = query_params.get("url", [""])[0]
+            target = params.get("url", [""])[0]
             if not target or not target.startswith("http"):
-                self.send_response(400)
+                return self._respond(400, b"Missing url")
+            return self._proxy_video(target)
+
+        return super().do_GET()
+
+    def _proxy_video(self, target):
+        try:
+            extra = {"Referer": "https://streamtape.com/", "Accept": "*/*"}
+            range_hdr = self.headers.get("Range")
+            if range_hdr:
+                extra["Range"] = range_hdr
+
+            with http_get(target, 30, extra) as resp:
+                self.send_response(resp.status)
+                self.send_header("Content-Type", resp.headers.get("Content-Type", "video/mp4"))
                 self.send_header("Access-Control-Allow-Origin", "*")
-                self._safe_end_headers()
-                self._safe_write(b"Missing url")
-                return
-            try:
-                headers = {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer": "https://streamtape.com/",
-                    "Accept": "*/*",
-                }
-                range_hdr = self.headers.get("Range")
-                if range_hdr:
-                    headers["Range"] = range_hdr
-                req = urllib.request.Request(target, headers=headers)
-                with urllib.request.urlopen(req, context=ssl_ctx, timeout=30) as resp:
-                    status = resp.status
-                    content_type = resp.headers.get("Content-Type", "video/mp4")
-                    content_length = resp.headers.get("Content-Length")
-                    content_range = resp.headers.get("Content-Range")
-                    accept_ranges = resp.headers.get("Accept-Ranges", "bytes")
-                    self.send_response(status)
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
-                    self.send_header("Accept-Ranges", accept_ranges)
-                    if content_length:
-                        self.send_header("Content-Length", content_length)
-                    if content_range:
-                        self.send_header("Content-Range", content_range)
-                    self.send_header("Cache-Control", "no-store")
-                    self._safe_end_headers()
+                self.send_header("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+                self.send_header("Accept-Ranges", resp.headers.get("Accept-Ranges", "bytes"))
+                for header in ("Content-Length", "Content-Range"):
+                    value = resp.headers.get(header)
+                    if value:
+                        self.send_header(header, value)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+
+                try:
                     while True:
                         chunk = resp.read(64 * 1024)
                         if not chunk:
                             break
-                        self._safe_write(chunk)
-            except Exception as e:
-                print(f"proxy_video error: {e}")
-                try:
-                    self.send_response(502)
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self._safe_end_headers()
-                    self._safe_write(str(e).encode("utf-8"))
-                except Exception:
+                        self.wfile.write(chunk)
+                except CLIENT_GONE:
+                    # A lejátszó lezárta a kapcsolatot (tekerés, bezárás) – nem hiba
                     pass
-            return
-
-        return super().do_GET()
+        except Exception as e:
+            print(f"proxy_video error: {e}")
+            self._respond(502, str(e))
 
     def _resolve_streamtape(self, raw_url):
         """Extract playable get_video URL — evaluates Streamtape's substring obfuscation."""
@@ -262,17 +187,12 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
             m_id = re.search(r"/(?:v|e|r)/([A-Za-z0-9]+)", raw_url)
             if not m_id:
                 return None
-            vid = m_id.group(1)
-            page_url = f"https://streamtape.com/e/{vid}"
-            req = urllib.request.Request(
-                page_url,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer": "https://streamtape.com/",
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            )
-            with urllib.request.urlopen(req, context=ssl_ctx, timeout=12) as resp:
+
+            page_url = f"https://streamtape.com/e/{m_id.group(1)}"
+            with http_get(page_url, 12, {
+                "Referer": "https://streamtape.com/",
+                "Accept-Language": "en-US,en;q=0.9",
+            }) as resp:
                 html = resp.read().decode("utf-8", errors="ignore")
 
             direct = ""
@@ -289,7 +209,7 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
                     continue
                 prefix, payload, subs = m.group(1), m.group(2), m.group(3)
                 for sm in re.finditer(r"\.substring\((\d+)\)", subs):
-                    payload = payload[int(sm.group(1)) :]
+                    payload = payload[int(sm.group(1)):]
                 part = prefix + payload
                 if part.startswith("//"):
                     direct = "https:" + part
@@ -326,7 +246,6 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
             return None
 
 
-
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -337,4 +256,3 @@ if __name__ == "__main__":
         print(f"Denji-T Server running at http://localhost:{PORT}")
         print(f"Serving files from: {DIRECTORY}")
         httpd.serve_forever()
-

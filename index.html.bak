@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="hu">
+<html lang="hu" data-motion="full" data-invert="off">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
@@ -39,6 +39,7 @@
         <div class="login-panel">
             <nav class="mode-links" role="tablist">
                 <button type="button" class="mode-link active" data-mode="passcode" role="tab">Belépőkód</button>
+                <span class="mode-sep">/</span>
                 <button type="button" class="mode-link" data-mode="admin" role="tab">Admin</button>
             </nav>
 
@@ -223,8 +224,8 @@
                     <!-- Tartalék kép, ha nincs lejátszható tartalom. A borító teljes egészében
                          látszik (contain), mögötte a saját elmosott mása tölti ki a 16:9-es keretet. -->
                     <div id="cinema-player-placeholder" class="stage-placeholder">
-                        <img class="ph-fill" alt="" aria-hidden="true" referrerpolicy="no-referrer" decoding="async" hidden>
-                        <img class="ph-cover" alt="" referrerpolicy="no-referrer" decoding="async" hidden>
+                        <img id="cinema-placeholder-fill" class="ph-fill" alt="" aria-hidden="true" referrerpolicy="no-referrer" decoding="async" hidden>
+                        <img id="cinema-placeholder-img" class="ph-cover" alt="" referrerpolicy="no-referrer" decoding="async" hidden>
                     </div>
                 </div>
                 <button class="stage-arrow stage-next" id="cinema-next-btn" aria-label="Következő">→</button>
@@ -282,11 +283,11 @@
             <fieldset class="form-block">
                 <legend class="label">Alapadatok</legend>
                 <div class="form-grid">
-                    <div class="line-field">
+                    <div class="line-field dark">
                         <label class="label" for="add-title">Cím *</label>
                         <input type="text" id="add-title" class="line-input" placeholder="pl. Elden Ring" required>
                     </div>
-                    <div class="line-field">
+                    <div class="line-field dark">
                         <label class="label" for="add-category">Kategória *</label>
                         <select id="add-category" class="line-input" required>
                             <option value="">Válassz…</option>
@@ -297,13 +298,13 @@
                     </div>
                 </div>
 
-                <label class="check" id="magyar-group" style="display:none">
+                <label class="check check-dark" id="magyar-group" style="display:none">
                     <input type="checkbox" id="add-magyar">
                     <span class="check-box" aria-hidden="true"></span>
                     <span class="label">Magyar tartalom — csak a 7777 kód látja</span>
                 </label>
 
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label">Borítókép</label>
                     <div id="cover-drop-zone" class="drop">
                         <div class="drop-preview" id="cover-preview" hidden><img alt=""></div>
@@ -315,13 +316,13 @@
 
             <fieldset class="form-block">
                 <legend class="label">Lejátszás</legend>
-                <div class="line-field" id="film-stream-group">
+                <div class="line-field dark" id="film-stream-group">
                     <label class="label" for="add-stream">Streamtape link</label>
                     <input type="text" id="add-stream" class="line-input" placeholder="https://streamtape.com/v/…">
                 </div>
 
                 <div id="series-stream-group" style="display:none">
-                    <div class="line-field bulk-links-container">
+                    <div class="line-field dark bulk-links-container">
                         <div class="bulk-field-head">
                             <label class="label" for="add-series-bulk-links">Streamtape linkek tömeges bemásolása</label>
                             <span class="label-hint">Automatikusan felismeri az évadokat és részeket</span>
@@ -348,7 +349,7 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
                     <button type="button" id="add-season-btn" class="pill pill-light pill-sm">Új évad +</button>
                 </div>
 
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="add-trailers">YouTube trailerek — soronként egy</label>
                     <textarea id="add-trailers" class="line-input" rows="2" placeholder="https://www.youtube.com/watch?v=…"></textarea>
                 </div>
@@ -356,15 +357,15 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
 
             <fieldset class="form-block">
                 <legend class="label">Letöltés</legend>
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="add-magnet">Magnet link</label>
                     <input type="text" id="add-magnet" class="line-input" placeholder="magnet:?xt=urn:btih:…">
                 </div>
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="add-download">Közvetlen link</label>
                     <input type="text" id="add-download" class="line-input" placeholder="https://…">
                 </div>
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="torrent-input">Torrent fájl</label>
                     <input type="file" id="torrent-input" accept=".torrent" class="line-input file">
                 </div>
@@ -372,7 +373,7 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
 
             <fieldset class="form-block">
                 <legend class="label">Leírás</legend>
-                <div class="line-field">
+                <div class="line-field dark">
                     <textarea id="add-description" class="line-input" rows="4" placeholder="Rövid ismertető, verzió, nyelv, méret…"></textarea>
                 </div>
             </fieldset>
@@ -398,11 +399,11 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
 
         <div class="shell form-shell">
             <form id="add-passcode-form" class="form-grid form-grid-3">
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="new-friend-name">Név</label>
                     <input type="text" id="new-friend-name" class="line-input" placeholder="pl. Peti" required>
                 </div>
-                <div class="line-field">
+                <div class="line-field dark">
                     <label class="label" for="new-friend-code">Kód</label>
                     <input type="text" id="new-friend-code" class="line-input" placeholder="7788" required>
                 </div>
@@ -411,6 +412,22 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
 
             <div class="section-head"><h2 class="section-title">Aktív kódok</h2></div>
             <div id="passcode-list" class="code-list"></div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     TARTALÉK LEJÁTSZÓ
+     ============================================================ -->
+<div id="stream-modal" class="takeover">
+    <div class="takeover-inner">
+        <header class="takeover-bar shell">
+            <button class="link-quiet modal-close">← vissza</button>
+            <span class="label" id="stream-modal-title">Lejátszás</span>
+            <span class="label">Stream</span>
+        </header>
+        <div class="shell">
+            <div class="stage-box"><iframe id="stream-player-iframe" src="" allowfullscreen allow="autoplay; encrypted-media"></iframe></div>
         </div>
     </div>
 </div>

@@ -1,59 +1,50 @@
 /**
- * Authentication & Passcode Module for Denji-T
+ * Denji-T · Belépés és belépőkódok
  */
 
-// SHA-256 hash using Web Crypto API
+const USER_KEY = 'denjit_user';
+const PASSCODES_KEY = 'denjit_passcodes';
+
+// SHA-256 a Web Crypto API-val
 async function hashPassword(password) {
-    const msgUint8 = new TextEncoder().encode(password);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-    return hashHex;
+    const bytes = new TextEncoder().encode(password);
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Get passcodes list (CONFIG.PASSCODES + localStorage)
+const codeOf = (p) => String(p?.code ?? '').trim();
+
+// Kódlista: CONFIG.PASSCODES + a localStorage-ban tároltak (a config nyer ütközéskor)
 function getPasscodes() {
-    const configCodes = (typeof CONFIG !== 'undefined' && Array.isArray(CONFIG.PASSCODES)) ? CONFIG.PASSCODES : [];
+    const configCodes = Array.isArray(CONFIG?.PASSCODES) ? CONFIG.PASSCODES : [];
     let localCodes = [];
-    const stored = localStorage.getItem('denjit_passcodes');
-    if (stored) {
-        try {
-            localCodes = JSON.parse(stored);
-        } catch (e) {
-            console.error('Failed to parse passcodes:', e);
-        }
+    try {
+        localCodes = JSON.parse(localStorage.getItem(PASSCODES_KEY)) || [];
+    } catch (e) {
+        console.error('Failed to parse passcodes:', e);
     }
-    
+
     const combined = [...configCodes];
     for (const item of localCodes) {
-        if (!combined.some(p => p.code.trim() === item.code.trim())) {
-            combined.push(item);
-        }
+        if (!combined.some(p => codeOf(p) === codeOf(item))) combined.push(item);
     }
     for (const item of combined) {
-        if (item.code.trim() === '7777') {
-            item.name = 'Anya';
-        }
-    }
-    if (combined.length === 0) {
-        combined.push({ id: '1', name: 'Barát', code: '7788', role: 'guest' });
-        combined.push({ id: '2', name: 'Anya', code: '7777', role: 'guest' });
+        if (codeOf(item) === '7777') item.name = 'Anya';
     }
     return combined;
 }
 
-// Save passcodes list
 function savePasscodes(passcodes) {
-    localStorage.setItem('denjit_passcodes', JSON.stringify(passcodes));
+    localStorage.setItem(PASSCODES_KEY, JSON.stringify(passcodes));
 }
 
-// Add or update a passcode
+// Kód hozzáadása vagy felülírása
 function addPasscode(name, code, role = 'guest') {
     const passcodes = getPasscodes();
     const cleanCode = code.trim();
-    const existingIndex = passcodes.findIndex(p => p.code.trim() === cleanCode);
-    if (existingIndex >= 0) {
-        passcodes[existingIndex] = { id: passcodes[existingIndex].id, name, code: cleanCode, role };
+    const existing = passcodes.findIndex(p => codeOf(p) === cleanCode);
+    if (existing >= 0) {
+        passcodes[existing] = { id: passcodes[existing].id, name, code: cleanCode, role };
     } else {
         passcodes.push({ id: Date.now().toString(), name, code: cleanCode, role });
     }
@@ -61,62 +52,46 @@ function addPasscode(name, code, role = 'guest') {
     return passcodes;
 }
 
-// Delete a passcode
 function deletePasscode(id) {
-    let passcodes = getPasscodes();
-    passcodes = passcodes.filter(p => p.id !== id);
+    const passcodes = getPasscodes().filter(p => p.id !== id);
     savePasscodes(passcodes);
     return passcodes;
 }
 
-// Store the session — "remember" esetén az eszközön is megmarad
+// Munkamenet mentése — „maradjak bejelentkezve” esetén az eszközön is megmarad
 function saveSession(user, remember) {
     const data = JSON.stringify(user);
-    sessionStorage.setItem('denjit_user', data);
-    if (remember) {
-        localStorage.setItem('denjit_user', data);
-    } else {
-        localStorage.removeItem('denjit_user');
-    }
+    sessionStorage.setItem(USER_KEY, data);
+    if (remember) localStorage.setItem(USER_KEY, data);
+    else localStorage.removeItem(USER_KEY);
 }
 
-// Login with Admin Username + Password
+// Belépés admin felhasználónévvel + jelszóval
 async function loginWithPassword(username, password, remember = false) {
-    if (username === CONFIG.ADMIN_USERNAME) {
-        const hashedPassword = await hashPassword(password);
-        if (hashedPassword === CONFIG.ADMIN_PASSWORD_HASH) {
-            const user = { username: 'Denji', displayName: 'Denji', role: 'admin' };
-            saveSession(user, remember);
-            return { success: true, user };
-        }
+    if (username === CONFIG.ADMIN_USERNAME && await hashPassword(password) === CONFIG.ADMIN_PASSWORD_HASH) {
+        const user = { username: 'Denji', displayName: 'Denji', role: 'admin' };
+        saveSession(user, remember);
+        return { success: true, user };
     }
     return { success: false, error: 'Hibás felhasználónév vagy jelszó!' };
 }
 
-// Login with Passcode
+// Belépés belépőkóddal
 function loginWithPasscode(code, remember = false) {
     const cleanCode = code.trim();
     if (!cleanCode) return { success: false, error: 'Add meg a kódot!' };
 
-    const passcodes = getPasscodes();
-    const found = passcodes.find(p => p.code.trim() === cleanCode);
-    if (found) {
-        const user = { username: found.name, displayName: found.name, role: found.role || 'guest', code: cleanCode };
-        saveSession(user, remember);
-        return { success: true, user };
-    }
-    return { success: false, error: 'Érvénytelen belépési kód!' };
+    const found = getPasscodes().find(p => codeOf(p) === cleanCode);
+    if (!found) return { success: false, error: 'Érvénytelen belépési kód!' };
+
+    const user = { username: found.name, displayName: found.name, role: found.role || 'guest', code: cleanCode };
+    saveSession(user, remember);
+    return { success: true, user };
 }
 
-// Legacy login wrapper for backward compatibility
-async function login(username, password) {
-    const res = await loginWithPassword(username, password);
-    return res.success;
-}
-
-// Get current logged in user (session → "maradjak bejelentkezve" tároló)
+// Belépett felhasználó (munkamenet → „maradjak bejelentkezve” tároló)
 function getCurrentUser() {
-    const data = sessionStorage.getItem('denjit_user') || localStorage.getItem('denjit_user');
+    const data = sessionStorage.getItem(USER_KEY) || localStorage.getItem(USER_KEY);
     if (!data) return null;
     try {
         return JSON.parse(data);
@@ -125,33 +100,26 @@ function getCurrentUser() {
     }
 }
 
-// Check if user is logged in
 function isLoggedIn() {
     return !!getCurrentUser();
 }
 
-// Check if logged in user is admin
 function isAdmin() {
-    const user = getCurrentUser();
-    return user && user.role === 'admin';
+    return getCurrentUser()?.role === 'admin';
 }
 
-// Check if logged in user is 7777 passcode user (Anya)
+// A 7777-es kód (Anya) csak a magyar tartalmakat látja
 function is7777User() {
     const user = getCurrentUser();
     if (!user) return false;
-    return (
-        user.code === '7777' ||
-        String(user.code) === '7777' ||
+    return String(user.code) === '7777' ||
         user.username === 'Anya' ||
         user.displayName === 'Anya' ||
-        user.username === 'Magyar Barát'
-    );
+        user.username === 'Magyar Barát';
 }
 
-// Logout
 function logout() {
-    sessionStorage.removeItem('denjit_user');
-    localStorage.removeItem('denjit_user');
+    sessionStorage.removeItem(USER_KEY);
+    localStorage.removeItem(USER_KEY);
     window.location.reload();
 }

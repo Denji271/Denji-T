@@ -19,9 +19,6 @@ const Store = {
         } catch (e) {
             console.warn('Store write failed:', key, e);
         }
-    },
-    remove(key) {
-        try { localStorage.removeItem(key); } catch (e) {}
     }
 };
 
@@ -37,6 +34,21 @@ const debounce = (fn, ms = 160) => {
         t = setTimeout(() => fn(...args), ms);
     };
 };
+
+/* Görgetéshez kötött munkát csak képkockánként egyszer végzünk el */
+const rafThrottle = (fn) => {
+    let queued = false;
+    return (...args) => {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(() => {
+            queued = false;
+            fn(...args);
+        });
+    };
+};
+
+const prefersReducedMotion = () => !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 function formatDate(iso, long = false) {
     if (!iso) return '';
@@ -167,33 +179,6 @@ const CoverLoader = {
     }
 };
 
-/* ---------------- Preferences ---------------- */
-const Prefs = {
-    key: 'denjit_prefs_v4',
-    // A megjelenés rögzített: aurora sötét téma, teljes mozgás.
-    fixed: { invert: 'off', motion: 'full' },
-    defaults: {},
-    data: {},
-
-    load() {
-        this.data = Object.assign({}, this.defaults, Store.get(this.key, {}));
-        this.apply();
-        return this.data;
-    },
-    get(key) { return this.fixed[key] ?? this.data[key] ?? this.defaults[key]; },
-    set(key, value) {
-        if (key in this.fixed) return;
-        this.data[key] = value;
-        Store.set(this.key, this.data);
-        this.apply();
-    },
-    apply() {
-        const html = document.documentElement;
-        html.dataset.invert = this.fixed.invert;
-        html.dataset.motion = this.fixed.motion;
-    }
-};
-
 /* ---------------- UI ---------------- */
 const UI = {
     _open: 0,
@@ -279,9 +264,9 @@ const UI = {
     },
 
     /* --- Popover --- */
-    togglePop(el, force) {
+    togglePop(el) {
         if (!el) return;
-        const willOpen = force !== undefined ? force : !el.classList.contains('open');
+        const willOpen = !el.classList.contains('open');
         document.querySelectorAll('.menu-pop.open').forEach(p => { if (p !== el) p.classList.remove('open'); });
         el.classList.toggle('open', willOpen);
         const chip = document.getElementById('user-chip');
