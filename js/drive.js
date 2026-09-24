@@ -241,6 +241,7 @@ class DriveAPI {
             streamUrl: null,
             downloadUrl: null,
             trailers: [],
+            subtitles: [],  // [{ id, name }] — .srt/.vtt fájlok a mappában
             episodes: null, // régi, lapos forma: [{ ep: 1, url: '...' }]
             seasons: null,  // [{ season: 1, episodes: [{ ep: 1, url }] }]
             isMagyar: false,
@@ -277,6 +278,10 @@ class DriveAPI {
             else if (nameLower.endsWith('.torrent') || mime === 'application/x-bittorrent') {
                 torrent.torrentFileId = file.id;
                 torrent.torrentFileName = file.name;
+            }
+            // 2b. Felirat — a lejátszó a Drive-ról tölti be, amikor bekapcsolják
+            else if (/\.(srt|vtt)$/i.test(nameLower)) {
+                torrent.subtitles.push({ id: file.id, name: file.name });
             }
             // 3. Kategória (kategoria.txt)
             else if (nameLower === 'kategoria.txt' || nameLower === 'category.txt') {

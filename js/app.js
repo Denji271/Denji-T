@@ -30,6 +30,7 @@ class App {
         // Reklámmentes lejátszás: feloldott linkek gyorsítótára + versenyhelyzet-védelem
         this._streamCache = new Map();
         this._playToken = 0;
+        this.player = null;
     }
 
     /* ============================================================
@@ -38,6 +39,9 @@ class App {
     async init() {
         this.measureScrollbar();
         window.addEventListener('resize', debounce(() => this.measureScrollbar(), 200));
+        this.player = new Player(
+            document.getElementById('cinema-player-wrapper'),
+            document.getElementById('cinema-player-video'));
         this.bindEvents();
 
         if (isLoggedIn()) this.showMainPage();
@@ -851,12 +855,16 @@ class App {
     /**
      * Csak a legszükségesebb billentyűkezelés marad:
      * Esc = bezárás, Ctrl/⌘+K = keresőpaletta, nyilak = rész léptetése a lejátszóban.
+     * Amíg a saját lejátszó fut, a billentyűket az kapja (szóköz, nyilak, F, M, C, N, P).
      */
     bindShortcuts() {
         document.addEventListener('keydown', (e) => {
             const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
 
             if (e.key === 'Escape') {
+                // Előbb a lejátszó menüje, teljes képernyőn pedig csak abból lépünk ki
+                if (this.player?.closeMenus()) return;
+                if (document.fullscreenElement || document.webkitFullscreenElement) return;
                 if (document.getElementById('cmdk').classList.contains('active')) return this.closeCmdk();
                 const open = document.querySelector('.sheet.active, .takeover.active');
                 if (open) {
@@ -874,6 +882,7 @@ class App {
             }
 
             if (document.getElementById('detail-modal').classList.contains('active') && !typing) {
+                if (this.player?.handleKey(e)) return;
                 if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && this.currentSeasons) {
                     e.preventDefault();
                     this.playRelativeEpisode(e.key === 'ArrowRight' ? 1 : -1);
@@ -1173,7 +1182,7 @@ class App {
             return;
         }
         const item = this.currentMediaList[this.currentMediaIndex];
-        if (item?.url) this.playEmbed(item.url);
+        if (item?.url) this.playEmbed(item.url, this.playbackContext(item));
         document.querySelectorAll('#cinema-server-tabs .tab-link').forEach((b, i) =>
             b.classList.toggle('active', i === this.currentMediaIndex));
     }
@@ -1215,6 +1224,7 @@ class App {
     /* A lejátszók leállítása — enélkül az iframe a bezárás után is szólna tovább */
     stopVideo(video) {
         if (!video) return;
+        this.player?.detach();  // előbb elmenti, hol tartott a néző
         video.onerror = null;   // a leállítás ne indítsa el a tartalék lejátszót
         video.pause();
         video.removeAttribute('src');
@@ -1235,18 +1245,51 @@ class App {
         this.stopVideo(document.getElementById('cinema-player-video'));
     }
 
-    playEmbed(url) {
+    playEmbed(url, ctx) {
         this.mountStream(url, {
             box: 'cinema-player-wrapper',
             iframe: 'cinema-player-iframe',
             video: 'cinema-player-video',
             placeholder: 'cinema-player-placeholder'
+        }, ctx);
+    }
+
+    /* A saját lejátszónak: mit játszunk (a folytatás kulcsa), felirat, következő rész */
+    playbackContext(item) {
+        const t = this.currentTorrent;
+        if (!t) return null;
+        const ctx = { key: t.id, title: t.title, subtitles: t.subtitles || [] };
+        const seasons = this.currentSeasons;
+        if (!seasons || item.label?.startsWith('Trailer')) return ctx;
+
+        const sIdx = this.currentSeasonIndex;
+        const eIdx = this.currentEpisodeIndex;
+        const season = seasons[sIdx];
+        const ep = season?.episodes?.[eIdx];
+        if (!ep) return ctx;
+
+        ctx.key = `${t.id}:${sIdx}-${eIdx}`;
+        ctx.title = `${t.title} · ${item.label}`;
+        // Sorozatnál a felirat fájlnevében lévő S01E02 dönti el, melyik részhez tartozik
+        ctx.subtitles = ctx.subtitles.filter(sub => {
+            const m = sub.name.match(/s(\d{1,2})[\s._-]*e(\d{1,3})/i) || sub.name.match(/(\d{1,2})x(\d{2,3})/i);
+            return m && Number(m[1]) === Number(season.season) && Number(m[2]) === Number(ep.ep);
         });
+
+        const next = this.relativeEpisode(1);
+        const prev = this.relativeEpisode(-1);
+        if (next) {
+            const n = seasons[next.s];
+            ctx.nextLabel = `S${n.season}E${n.episodes[next.e].ep}`;
+            ctx.onNext = () => this.playEpisode(next.s, next.e);
+        }
+        if (prev) ctx.onPrev = () => this.playEpisode(prev.s, prev.e);
+        return ctx;
     }
 
     /* Betölti az URL-t a megadott lejátszóba: Streamtape esetén feloldva a
        natív <video>-ba, minden másnál (pl. YouTube) a beágyazott iframe-be. */
-    mountStream(url, ids) {
+    mountStream(url, ids, ctx) {
         const box = document.getElementById(ids.box);
         const iframe = ids.iframe ? document.getElementById(ids.iframe) : null;
         const video = ids.video ? document.getElementById(ids.video) : null;
@@ -1287,6 +1330,7 @@ class App {
                 this.stopVideo(video);
                 fallback(err);
             };
+            this.player?.attach(ctx);
             video.src = proxyUrl;
             video.style.display = 'block';
             video.play().catch(() => {});            // autoplay tiltás esetén csendben marad
@@ -1370,31 +1414,37 @@ class App {
         document.querySelectorAll('#series-season-tabs .tab-link').forEach((b, i) => b.classList.toggle('active', i === sIdx));
     }
 
-    playRelativeEpisode(delta) {
+    /* Az aktuálishoz képest delta-adik rész helye évadhatáron át, vagy null, ha nincs ilyen */
+    relativeEpisode(delta) {
         const seasons = this.currentSeasons;
-        if (!seasons) return;
+        if (!seasons) return null;
         let s = this.currentSeasonIndex;
         let e = this.currentEpisodeIndex + delta;
 
         while (e < 0) {
             s--;
-            if (s < 0) return UI.toast('Ez az első rész.', 'info', 2000);
+            if (s < 0) return null;
             e += seasons[s].episodes.length;
         }
         while (e >= seasons[s].episodes.length) {
             e -= seasons[s].episodes.length;
             s++;
-            if (s >= seasons.length) return UI.toast('Ez volt az utolsó rész.', 'info', 2000);
+            if (s >= seasons.length) return null;
         }
-        this.playEpisode(s, e);
+        return { s, e };
+    }
+
+    playRelativeEpisode(delta) {
+        if (!this.currentSeasons) return;
+        const target = this.relativeEpisode(delta);
+        if (!target) return UI.toast(delta < 0 ? 'Ez az első rész.' : 'Ez volt az utolsó rész.', 'info', 2000);
+        this.playEpisode(target.s, target.e);
     }
 
     updateNextEpisodeBtn() {
         const btn = document.getElementById('next-episode-btn');
         if (!btn || !this.currentSeasons) return;
-        const season = this.currentSeasons[this.currentSeasonIndex];
-        btn.hidden = !((this.currentEpisodeIndex + 1 < season.episodes.length) ||
-                       (this.currentSeasonIndex + 1 < this.currentSeasons.length));
+        btn.hidden = !this.relativeEpisode(1);
     }
 
     /* ============================================================
