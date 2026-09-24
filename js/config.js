@@ -13,7 +13,7 @@ const CONFIG = {
     ADMIN_PASSWORD_HASH: '5c80565db6f29da0b01aa12522c37b32f121cbe47a861ef7f006cb22922dffa1',
     PASSCODES: [
         { id: '1', name: 'Barát', code: '7788', role: 'guest' },
-        { id: '2', name: 'Anya', code: '7777', role: 'guest' }
+        { id: '2', name: 'Anya&Laci', code: '7777', role: 'guest' }
     ],
     CACHE_TTL: 5 * 60 * 1000, // 5 perc
 };
