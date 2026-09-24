@@ -1124,13 +1124,14 @@ class App {
         const hit = this._streamCache.get(url);
         if (hit && Date.now() - hit.at < STREAM_CACHE_TTL) return hit.proxy;
 
-        const res = await fetch(`/api/resolve_stream?url=${encodeURIComponent(url)}`);
+        const res = await fetch(apiUrl(`/api/resolve_stream?url=${encodeURIComponent(url)}`));
         if (!res.ok) throw new Error(`resolve_stream HTTP ${res.status}`);
         const data = await res.json();
         if (!data.proxy) throw new Error('a szerver nem talált közvetlen linket');
 
-        this._streamCache.set(url, { proxy: data.proxy, at: Date.now() });
-        return data.proxy;
+        // A get_video token IP-hez kötött, ezért a videót is a szerveren át kérjük le
+        this._streamCache.set(url, { proxy: apiUrl(data.proxy), at: Date.now() });
+        return this._streamCache.get(url).proxy;
     }
 
     setStageLoading(box, on) {
@@ -1214,6 +1215,7 @@ class App {
     /* A lejátszók leállítása — enélkül az iframe a bezárás után is szólna tovább */
     stopVideo(video) {
         if (!video) return;
+        video.onerror = null;   // a leállítás ne indítsa el a tartalék lejátszót
         video.pause();
         video.removeAttribute('src');
         video.load();
@@ -1256,11 +1258,20 @@ class App {
 
         const useIframe = () => {
             if (!iframe) return;
+            // sandbox nem mehet rá: a Streamtape azt „Client blocked!” oldallal utasítja el
             iframe.src = this.embedUrl(url);
             iframe.style.display = 'block';
         };
+        const fallback = (err) => {
+            if (token !== this._playToken) return;
+            console.warn('Stream feloldás sikertelen, marad a beágyazott lejátszó:', err);
+            UI.toast('A reklámmentes lejátszás nem sikerült, beágyazott lejátszó indul.', 'info', 3000);
+            useIframe();
+        };
 
-        if (!video || !this.isStreamtape(url)) return useIframe();
+        // Backend nélkül nincs mit feloldani — felesleges kérés és hibaüzenet nélkül
+        // megyünk a beágyazott lejátszóra.
+        if (!video || !this.isStreamtape(url) || !hasBackend()) return useIframe();
 
         // Natív útvonal: az iframe-et leállítjuk, nehogy a háttérben szóljon.
         this.stopIframe(iframe);
@@ -1268,15 +1279,18 @@ class App {
         this.setStageLoading(box, true);
         this.resolveStream(url).then(proxyUrl => {
             if (token !== this._playToken) return;   // közben másik részre váltott
+            // A feloldás sikerült, de a proxy mégsem ad videót (lejárt token, szerverhiba)
+            video.onerror = () => {
+                if (token !== this._playToken) return;
+                const err = video.error;
+                this._streamCache.delete(url);
+                this.stopVideo(video);
+                fallback(err);
+            };
             video.src = proxyUrl;
             video.style.display = 'block';
             video.play().catch(() => {});            // autoplay tiltás esetén csendben marad
-        }).catch(err => {
-            if (token !== this._playToken) return;
-            console.warn('Stream feloldás sikertelen, marad a beágyazott lejátszó:', err);
-            UI.toast('A reklámmentes lejátszás nem sikerült, beágyazott lejátszó indul.', 'info', 3000);
-            useIframe();
-        }).finally(() => {
+        }).catch(fallback).finally(() => {
             if (token === this._playToken) this.setStageLoading(box, false);
         });
     }

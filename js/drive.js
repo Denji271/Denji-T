@@ -7,6 +7,14 @@ const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 const LIB_CACHE_KEY = 'denjit_library_v1';
 const MAGNET_RE = /magnet:\?xt=urn:[^\s"']+/i;
 
+/* ---------------- Backend (server.py) ----------------
+ * A reklámmentes lejátszáshoz és a szövegfájlok olvasásához kell egy futó szerver.
+ * Statikus tárhelyen (pl. GitHub Pages) ilyen nincs — ott CONFIG.API_BASE adja meg,
+ * hol fut. Üres API_BASE mellett csak localhoston próbálkozunk. */
+const apiUrl = (path) => `${(CONFIG.API_BASE || '').replace(/\/+$/, '')}${path}`;
+const hasBackend = () => !!CONFIG.API_BASE ||
+    location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+
 /**
  * Korlátozott párhuzamosságú map — a Drive listázás így sokszor gyorsabb,
  * de nem terheli túl az API-t. A sorrend megmarad.
@@ -176,11 +184,11 @@ class DriveAPI {
             } catch (e) {}
         }
 
-        // 2. Helyi szerver proxy (/api/read_text) — csak localhoston
-        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+        // 2. Szerver proxy (/api/read_text) — csak ha van elérhető backend
+        if (hasBackend()) {
             try {
                 const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
-                const res = await fetchWithTimeout(`/api/read_text?id=${fileId}${titleParam}`, 4000);
+                const res = await fetchWithTimeout(apiUrl(`/api/read_text?id=${fileId}${titleParam}`), 4000);
                 if (res.ok) {
                     const parsed = parseText(await res.text());
                     if (parsed) return parsed;

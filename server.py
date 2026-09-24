@@ -8,7 +8,8 @@ import os
 import ssl
 import traceback
 
-PORT = 8080
+# A felhőszolgáltatók (Render, Fly, Railway…) a PORT változóban adják meg a portot
+PORT = int(os.environ.get("PORT", 8080))
 DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 
 # Same API key as js/config.js
@@ -20,6 +21,8 @@ BROWSER_UA = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 MAGNET_RE = re.compile(r'magnet:\?xt=urn:[^\s"\'<>]+', re.IGNORECASE)
+# Nyilvános szerveren csak ezekre proxyzunk — különben bárki ingyenes proxynak használhatná
+VIDEO_HOST_RE = re.compile(r"(^|\.)(streamtape\.[a-z]+|tapecontent\.net)$", re.IGNORECASE)
 
 # A kliens megszakított kérései (AbortController) ezekkel a hibákkal jelentkeznek
 CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError)
@@ -142,7 +145,8 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
         # ---- Proxy video bytes (Range support for seeking) ----
         if parsed_path.path == "/api/proxy_video":
             target = params.get("url", [""])[0]
-            if not target or not target.startswith("http"):
+            host = urllib.parse.urlparse(target).hostname or ""
+            if not target.startswith("http") or not VIDEO_HOST_RE.search(host):
                 return self._respond(400, b"Missing url")
             return self._proxy_video(target)
 
