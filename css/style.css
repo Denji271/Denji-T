@@ -1414,6 +1414,13 @@ select option { background: var(--night); color: var(--fg); }
     transition: bottom var(--t-move);
 }
 .pl-awake .pl-subs, .pl-paused .pl-subs { bottom: calc(var(--pl-bar-space, 88px) + 12px); }
+/* Telefonon (érintőképernyőn) a felirat feljebb ül, mint gépen — a Netflixhez hasonlóan. A kis
+   képen a 8% csak pár pixel lenne a kerettől, fekvő teljes képernyőn pedig a kijelző alsó íve és a
+   hüvelykujj takarná. Ha a vezérlősáv látszik, a fenti szabály szerint továbbra is fölötte marad. */
+@media (pointer: coarse) {
+    .pl-subs { bottom: max(13%, 26px); }
+    .pl-fs:not(.pl-awake):not(.pl-paused) .pl-subs { bottom: calc(13% + env(safe-area-inset-bottom, 0px)); }
+}
 /* Netflix-szerű felirat: háttér nélkül, fehér betű lágy, szürkésfekete árnyékkal —
    a vékony belső réteg világos képen is kiemeli a betűt, a szélesebb külső lágyan elmos */
 .pl-subs span {

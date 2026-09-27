@@ -65,6 +65,7 @@ class Player {
         this.subIndex = -1;
         this._sub = null;           // { el, url }
         this._subToken = 0;
+        this._native = false;       // iPhone rendszer-lejátszója teljes képernyőn
         this._dragT = null;
         this._resumeTo = null;
         this._saveAt = 0;
@@ -287,6 +288,11 @@ class Player {
         document.addEventListener('fullscreenchange', onFs);
         document.addEventListener('webkitfullscreenchange', onFs);
 
+        // iPhone-on a teljes képernyő a rendszer saját lejátszója: abban a saját feliratréteg nem
+        // látszik, ezért ott a rendszer rajzolja ki a feliratsávot (feljebb tolva, lásd liftCues)
+        v.addEventListener('webkitbeginfullscreen', () => this.setNativeSubs(true));
+        v.addEventListener('webkitendfullscreen', () => this.setNativeSubs(false));
+
         window.addEventListener('pagehide', () => this.savePos());
         document.addEventListener('visibilitychange', () => { if (document.hidden) this.savePos(); });
     }
@@ -493,10 +499,15 @@ class Player {
             const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
             const el = document.createElement('track');
             el.kind = 'subtitles';
+            // Az iPhone teljes képernyős lejátszója ezt a nevet mutatja a felirat menüjében
+            el.label = subtitleLabels(this.ctx.subtitles)[index] || 'Felirat';
+            el.srclang = subtitleNameInfo(sub.name).lang || '';
             el.src = url;
+            el.addEventListener('load', () => this.liftCues());
             this.video.appendChild(el);
-            // Rejtett sáv: a szöveget mi rajzoljuk ki, hogy a vezérlők fölé kerüljön
-            el.track.mode = 'hidden';
+            // Rejtett sáv: a szöveget mi rajzoljuk ki, hogy a vezérlők fölé kerüljön.
+            // iPhone teljes képernyőjén viszont a rendszer rajzolja, ott látható kell legyen.
+            el.track.mode = this._native ? 'showing' : 'hidden';
             el.track.addEventListener('cuechange', () => this.renderCues());
             this._sub = { el, url };
         } catch (e) {
@@ -522,6 +533,26 @@ class Player {
     renderCues() {
         const cues = this._sub?.el.track.activeCues;
         this.el.subs.innerHTML = cues ? [...cues].map(c => `<span>${cueHtml(c.text)}</span>`).join('') : '';
+    }
+
+    /* A rendszer által rajzolt feliratot (iPhone teljes képernyő) két sorral feljebb tesszük: alapból a
+       kép legaljára kerülne. A saját feliratréteg ezt nem használja, annak a helyét a CSS adja. */
+    liftCues() {
+        const cues = this._sub?.el.track.cues;
+        if (!cues) return;
+        for (const cue of cues) {
+            cue.snapToLines = true;
+            cue.line = -3;
+        }
+    }
+
+    /* iPhone teljes képernyő be/ki: a feliratsáv ott a rendszeré, egyébként a saját rétegé */
+    setNativeSubs(on) {
+        this._native = on;
+        const track = this._sub?.el.track;
+        if (!track) return;
+        if (on) this.liftCues();
+        track.mode = on ? 'showing' : 'hidden';
     }
 
     toggleSubs() {
