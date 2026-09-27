@@ -51,8 +51,9 @@ const authHeaders = (token, contentType) => contentType
     ? { 'Authorization': `Bearer ${token}`, 'Content-Type': contentType }
     : { 'Authorization': `Bearer ${token}` };
 
-/* A beágyazható Streamtape forma /e/, a megosztott link /v/ */
-const toEmbedUrl = (url) => String(url || '').trim().replace('streamtape.com/v/', 'streamtape.com/e/');
+/* A beágyazható Streamtape forma /e/, a megosztott link /v/ — a tükördomainek
+   (streamtape.to, strtape.cloud…) is streamtape.com-ra kerülnek (media-parse.js) */
+const toEmbedUrl = (url) => normalizeStreamUrl(url);
 
 /* A torrent kliensek a &dn= paraméterből veszik a letöltés nevét */
 const withDisplayName = (uri, title) =>
@@ -64,18 +65,32 @@ function findMagnet(text, title) {
     return match ? withDisplayName(match[0], title) : '';
 }
 
-/* Évad/rész listák egységesítése — ugyanaz a forma olvasáskor és mentéskor */
+/* Nemnegatív egész szám, különben a tartalék (a 0. rész is érvényes) */
+const toCount = (value, fallback) => {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
+/* Évad/rész listák egységesítése — ugyanaz a forma olvasáskor és mentéskor.
+   A számok mindig számok (nem „01” szöveg), az azonos számú évadok összeolvadnak,
+   és minden számsorrendbe kerül. */
 function cleanSeasons(seasons) {
-    return (seasons || []).map((s, si) => ({
-        season: s.season || (si + 1),
-        episodes: cleanEpisodes(s.episodes)
-    })).filter(s => s.episodes.length);
+    const bySeason = new Map();
+    (seasons || []).forEach((s, si) => {
+        const episodes = cleanEpisodes(s?.episodes);
+        if (!episodes.length) return;
+        const num = toCount(s?.season, si + 1);
+        bySeason.set(num, [...(bySeason.get(num) || []), ...episodes]);
+    });
+    return [...bySeason.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([season, episodes]) => ({ season, episodes: episodes.sort((a, b) => a.ep - b.ep) }));
 }
 
 function cleanEpisodes(episodes) {
     return (episodes || []).map((e, i) => ({
-        ep: e.ep || (i + 1),
-        url: toEmbedUrl(e.url)
+        ep: toCount(e?.ep, i + 1),
+        url: toEmbedUrl(e?.url)
     })).filter(e => e.url);
 }
 
@@ -97,10 +112,11 @@ class DriveAPI {
     /* ---------- Tartós gyorsítótár (azonnali első megjelenítés) ---------- */
     persistTorrents(torrents) {
         try {
-            const slim = (torrents || []).map(t => ({
-                ...t,
-                description: t.description ? String(t.description).slice(0, 600) : t.description
-            }));
+            // A leírás rövidítve kerül a tárolóba; a jelzés alapján a szerkesztő a teljeset tölti be
+            const slim = (torrents || []).map(t => {
+                const cut = !!t.description && String(t.description).length > 600;
+                return cut ? { ...t, description: String(t.description).slice(0, 600), descriptionCut: true } : t;
+            });
             localStorage.setItem(LIB_CACHE_KEY, JSON.stringify({ ts: Date.now(), items: slim }));
         } catch (e) {
             // Kvóta túllépés esetén egyszerűen kihagyjuk
@@ -141,9 +157,12 @@ class DriveAPI {
     }
 
     /* ---------- Listázás ---------- */
-    async _listChildren(parentId, fields, extraQuery = '') {
+    /* Tokennel (admin írásnál) a nem nyilvános fájlok is látszanak */
+    async _listChildren(parentId, fields, extraQuery = '', token = null) {
         const q = `'${parentId}'+in+parents+and+trashed=false${extraQuery}`;
-        const res = await fetch(`${DRIVE_FILES}?q=${q}&key=${CONFIG.GOOGLE_API_KEY}&fields=files(${fields})&orderBy=name`);
+        const auth = token ? '' : `&key=${CONFIG.GOOGLE_API_KEY}`;
+        const res = await fetch(`${DRIVE_FILES}?q=${q}${auth}&fields=files(${fields})&orderBy=name&pageSize=1000`,
+            token ? { headers: authHeaders(token) } : {});
         if (!res.ok) throw new Error(`Drive API error: ${res.status}`);
         return (await res.json()).files || [];
     }
@@ -152,12 +171,16 @@ class DriveAPI {
         return this._listChildren(parentId, 'id,name,createdTime', `+and+mimeType='application/vnd.google-apps.folder'`);
     }
 
-    listFiles(folderId) {
-        return this._listChildren(folderId, 'id,name,mimeType,size,createdTime,webContentLink,description');
+    listFiles(folderId, token = null) {
+        return this._listChildren(folderId, 'id,name,mimeType,size,createdTime,webContentLink,description', '', token);
     }
 
-    // Szövegfájl beolvasása (alt=media + API kulcs 403-at ad, ezért a kerülőutak)
-    async readTextFile(fileId, torrentTitle = '') {
+    /**
+     * Szövegfájl beolvasása (alt=media + API kulcs 403-at ad, ezért a kerülőutak).
+     * skipDescription: a description mezőt már ismerjük (a listázásból), ne kérjük le újra —
+     * vagy csonka volt (pl. nagyon hosszú episodes.json), és a teljes fájl kell.
+     */
+    async readTextFile(fileId, torrentTitle = '', { skipDescription = false } = {}) {
         if (!fileId) return '';
 
         const parseText = (text) => {
@@ -173,7 +196,7 @@ class DriveAPI {
         };
 
         // 1. A Drive fájl description mezője API kulccsal (leggyorsabb, mindig elérhető)
-        if (CONFIG.GOOGLE_API_KEY) {
+        if (CONFIG.GOOGLE_API_KEY && !skipDescription) {
             try {
                 const res = await fetchWithTimeout(`${DRIVE_FILES}/${fileId}?fields=description&key=${CONFIG.GOOGLE_API_KEY}`, 2500);
                 if (res.ok) {
@@ -188,7 +211,8 @@ class DriveAPI {
         if (hasBackend()) {
             try {
                 const titleParam = torrentTitle ? `&title=${encodeURIComponent(torrentTitle)}` : '';
-                const res = await fetchWithTimeout(apiUrl(`/api/read_text?id=${fileId}${titleParam}`), 4000);
+                const nodesc = skipDescription ? '&nodesc=1' : '';
+                const res = await fetchWithTimeout(apiUrl(`/api/read_text?id=${encodeURIComponent(fileId)}${titleParam}${nodesc}`), 4000);
                 if (res.ok) {
                     const parsed = parseText(await res.text());
                     if (parsed) return parsed;
@@ -210,6 +234,36 @@ class DriveAPI {
         }
 
         return '';
+    }
+
+    /**
+     * Fájl bájtjai változatlanul (felirat). Sorban: API kulccsal közvetlenül, a szerveren át
+     * (/api/read_text?raw=1), végül admin tokennel. HTML válasz (bejelentkező / figyelmeztető
+     * oldal) nem számít sikernek.
+     */
+    async fetchFileBytes(fileId) {
+        const id = encodeURIComponent(fileId);
+        const attempts = [
+            () => fetchWithTimeout(`${DRIVE_FILES}/${id}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`, 8000),
+            hasBackend() && (() => fetchWithTimeout(apiUrl(`/api/read_text?id=${id}&raw=1`), 10000)),
+            this.accessToken && (() => fetchWithTimeout(`${DRIVE_FILES}/${id}?alt=media`, 8000, { headers: authHeaders(this.accessToken) })),
+        ].filter(Boolean);
+
+        let lastError = null;
+        for (const attempt of attempts) {
+            try {
+                const res = await attempt();
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const buf = await res.arrayBuffer();
+                if (!buf.byteLength) throw new Error('üres válasz');
+                const head = new TextDecoder().decode(buf.slice(0, 300)).toLowerCase();
+                if (head.includes('<!doctype html') || head.includes('<html')) throw new Error('HTML válasz');
+                return buf;
+            } catch (e) {
+                lastError = e;
+            }
+        }
+        throw lastError || new Error('A fájl nem érhető el');
     }
 
     // Borítókép URL (Google CDN — CORS és referer korlátozás nélkül minden böngészőben működik)
@@ -247,23 +301,33 @@ class DriveAPI {
             isMagyar: false,
         };
 
-        /* A tartalom kétszer érkezhet: azonnal a description mezőből, majd — ha az üres
-           volt vagy frissebb a fájl — a beolvasott szövegből. Mindkettőre ugyanaz fut. */
+        /* A szövegfájlok tartalma mentéskor a description mezőbe is bekerül, és ezt a listázás
+           már visszaadta — ilyenkor nincs mit még egyszer lekérni. A fájlt csak akkor olvassuk
+           be, ha a description üres, vagy nem értelmezhető (pl. csonka JSON: az `apply` false-t ad). */
         const hydrate = (file, apply, title = '') => {
-            if (file.description?.trim()) apply(file.description.trim());
-            this.readTextFile(file.id, title).then(text => {
+            const desc = file.description?.trim();
+            if (desc && apply(desc) !== false) return;
+            this.readTextFile(file.id, title, { skipDescription: true }).then(text => {
                 if (text?.trim()) apply(text.trim());
             }).catch(() => {});
         };
 
-        const applyStreamText = (text) => {
-            if (text.startsWith('{') || text.startsWith('[')) {
-                try {
-                    applyEpisodeData(torrent, JSON.parse(text));
-                } catch (e) {}
-            } else {
-                torrent.streamUrl = toEmbedUrl(text);
+        const applyEpisodesJson = (text) => {
+            try {
+                applyEpisodeData(torrent, JSON.parse(text));
+                return true;
+            } catch (e) {
+                return false;
             }
+        };
+
+        const applyStreamText = (text) => {
+            if (text.startsWith('{') || text.startsWith('[')) return applyEpisodesJson(text);
+            // Több link (pl. kézzel feltöltött streamtape.txt): évadokra és részekre bontjuk
+            const parsed = parseStreamLinks(text);
+            if (parsed.linkCount > 1) torrent.seasons = cleanSeasons(parsed.seasons);
+            else torrent.streamUrl = toEmbedUrl(parsed.linkCount ? parsed.seasons[0].episodes[0].url : text);
+            return true;
         };
 
         for (const file of files) {
@@ -293,11 +357,7 @@ class DriveAPI {
             }
             // 4b. episodes.json — évadokkal vagy lapos epizódlistával
             else if (nameLower === 'episodes.json' || nameLower === 'episodes.txt') {
-                hydrate(file, (text) => {
-                    try {
-                        applyEpisodeData(torrent, JSON.parse(text));
-                    } catch (e) {}
-                });
+                hydrate(file, applyEpisodesJson);
             }
             // 5. Közvetlen letöltés (download.txt, letoltes.txt)
             else if (nameLower === 'download.txt' || nameLower === 'letoltes.txt') {
@@ -326,15 +386,16 @@ class DriveAPI {
             }
             // 9. Egyéb szövegfájlok — jellemzően magnet linkek
             else if (nameLower.endsWith('.txt')) {
-                if (nameLower.startsWith('magnet')) {
-                    torrent.magnetFileId = file.id;
-                    const fromDescription = findMagnet(file.description, folder.name);
-                    if (fromDescription) torrent.magnetLink = fromDescription;
+                if (nameLower.startsWith('magnet')) torrent.magnetFileId = file.id;
+                const fromDescription = findMagnet(file.description, folder.name);
+                if (fromDescription) {
+                    torrent.magnetLink = fromDescription;
+                } else {
+                    this.readTextFile(file.id, folder.name, { skipDescription: true }).then(text => {
+                        const magnet = findMagnet(text, folder.name);
+                        if (magnet) torrent.magnetLink = magnet;
+                    }).catch(() => {});
                 }
-                this.readTextFile(file.id, folder.name).then(text => {
-                    const magnet = findMagnet(text, folder.name);
-                    if (magnet) torrent.magnetLink = magnet;
-                }).catch(() => {});
             }
         }
 
@@ -447,6 +508,19 @@ class DriveAPI {
         return fetch(`${DRIVE_FILES}/${fileId}`, { method: 'DELETE', headers: authHeaders(token) });
     }
 
+    /* Hibát dobó változatok: a mentés ne jelezzen sikert, ha egy lépése elhasalt */
+    async _mustPatch(fileId, body, what) {
+        const res = await this._patchFile(fileId, body);
+        if (!res.ok) throw new Error(`${what} nem sikerült (HTTP ${res.status})`);
+        return res;
+    }
+
+    async _mustDelete(fileId, what) {
+        const res = await this._deleteFile(fileId);
+        // A már nem létező fájl törlése nem hiba
+        if (!res.ok && res.status !== 404) throw new Error(`${what} törlése nem sikerült (HTTP ${res.status})`);
+    }
+
     async createFolder(name, parentId) {
         const token = await this.getAccessToken();
         const res = await fetch(DRIVE_FILES, {
@@ -495,20 +569,37 @@ class DriveAPI {
         return this.uploadFile(file, folderId, fileName, fileDescription);
     }
 
-    // Meglévő szövegfájl frissítése név alapján (ha nincs, létrehozza)
-    async upsertTextFile(folderId, fileName, content) {
+    /* Meglévő szövegfájl frissítése név alapján (ha nincs, létrehozza).
+       `files`: a mappa már lekért fájllistája — megspórol egy listázást, és frissen tartjuk. */
+    async upsertTextFile(folderId, fileName, content, files = null) {
         const token = await this.getAccessToken();
-        const files = await this.listFiles(folderId);
-        const existing = files.find(f => f.name.toLowerCase() === fileName.toLowerCase());
-        if (!existing) return this.uploadTextFile(content, folderId, fileName, content);
+        const list = files || await this.listFiles(folderId, token);
+        const existing = list.find(f => f.name.toLowerCase() === fileName.toLowerCase());
+        if (!existing) {
+            const created = await this.uploadTextFile(content, folderId, fileName, content);
+            if (files) files.push({ ...created, name: fileName, description: content });
+            return created;
+        }
 
-        await this._patchFile(existing.id, { description: content });
-        await fetch(`${DRIVE_UPLOAD}/${existing.id}?uploadType=media`, {
+        await this._mustPatch(existing.id, { description: String(content).slice(0, 90000) }, fileName);
+        const res = await fetch(`${DRIVE_UPLOAD}/${existing.id}?uploadType=media`, {
             method: 'PATCH',
             headers: authHeaders(token, 'text/plain'),
             body: content
         });
+        if (!res.ok) throw new Error(`${fileName} mentése nem sikerült (HTTP ${res.status})`);
+        existing.description = content;
         return existing;
+    }
+
+    /**
+     * Feliratok: törlés, átnevezés, feltöltés — a tervet az űrlap állítja össze.
+     * plan = { remove: [{ id, name }], rename: [{ id, name }], upload: [{ file, name }] }
+     */
+    async syncSubtitles(folderId, plan) {
+        for (const sub of plan?.remove || []) await this._mustDelete(sub.id, sub.name);
+        for (const sub of plan?.rename || []) await this._mustPatch(sub.id, { name: sub.name }, `${sub.name} átnevezése`);
+        for (const sub of plan?.upload || []) await this.uploadFile(sub.file, folderId, sub.name);
     }
 
     /* Lejátszási adat az űrlapról: `requested` = érkezett sorozatadat (ilyenkor a film-stream
@@ -526,7 +617,7 @@ class DriveAPI {
     }
 
     // Új tartalom: mappa a gyökérben + fájlok feltöltése
-    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar }) {
+    async addTorrent({ title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar, subtitlePlan }) {
         const folder = await this.createFolder(title, CONFIG.DRIVE_ROOT_FOLDER_ID);
         const put = (content, name) => this.uploadTextFile(content, folder.id, name, content);
 
@@ -554,50 +645,86 @@ class DriveAPI {
         if (trailers?.length) await put(trailers.join('\n'), 'trailers.txt');
         if (torrentFile) await this.uploadFile(torrentFile, folder.id, torrentFile.name);
         if (description) await put(description, 'leiras.txt');
+        if (subtitlePlan) await this.syncSubtitles(folder.id, subtitlePlan);
 
         this.clearCache();
         return folder;
     }
 
-    // Meglévő tartalom szerkesztése
-    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar }) {
-        if (title) await this._patchFile(folderId, { name: title });
-        if (category) await this.upsertTextFile(folderId, 'kategoria.txt', category);
+    /**
+     * Meglévő tartalom szerkesztése.
+     * `clear`: a mezők, amiket a felhasználó kiürített (volt értékük, most üresek) — ezek
+     * fájljai törlődnek. Üres mező önmagában nem töröl: lehet, hogy az adat még be sem töltődött.
+     * Kulcsok: magnet, download, trailers, description, stream, episodes.
+     */
+    async updateTorrent(folderId, { title, category, coverFile, magnetLink, torrentFile, description, streamUrl, downloadUrl, trailers, seasons, episodes, isMagyar, subtitlePlan, clear = [] }) {
+        const token = await this.getAccessToken();
+        const files = await this.listFiles(folderId, token);
+        const matching = (test) => files.filter(f => test(f.name.toLowerCase()));
+        const named = (...names) => matching(n => names.includes(n));
+        const upsert = (name, content) => this.upsertTextFile(folderId, name, content, files);
+        const remove = async (list) => {
+            for (const f of list) {
+                await this._mustDelete(f.id, f.name);
+                files.splice(files.indexOf(f), 1);
+            }
+        };
+
+        if (title) await this._mustPatch(folderId, { name: title }, 'Átnevezés');
+        if (category) await upsert('kategoria.txt', category);
 
         // Szerkesztéskor: BE → magyar.txt létrehozása, KI → magyar.txt törlése
         if (isMagyar !== undefined && isMagyar !== null) {
-            const existingMagyar = (await this.listFiles(folderId)).find(f => {
-                const n = (f.name || '').toLowerCase();
-                return n === 'magyar.txt' || n === 'is_magyar.txt';
-            });
+            const existingMagyar = named('magyar.txt', 'is_magyar.txt');
             if (isMagyar === true) {
-                if (!existingMagyar) await this.uploadTextFile('true', folderId, 'magyar.txt', 'true');
-            } else if (existingMagyar) {
-                await this._deleteFile(existingMagyar.id);
+                if (!existingMagyar.length) await upsert('magyar.txt', 'true');
+            } else {
+                await remove(existingMagyar);
             }
         }
 
         if (coverFile) {
-            const oldCover = (await this.listFiles(folderId)).find(f =>
-                (f.mimeType || '').startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(f.name));
-            if (oldCover) await this._deleteFile(oldCover.id);
+            await remove(files.filter(f => (f.mimeType || '').startsWith('image/') || /\.(jpe?g|png|webp|avif|gif)$/i.test(f.name)));
             await this.uploadFile(coverFile, folderId, `cover.${coverFile.name.split('.').pop()}`);
         }
 
-        if (magnetLink?.trim()) await this.upsertTextFile(folderId, 'magnet.txt', magnetLink.trim());
+        if (magnetLink?.trim()) await upsert('magnet.txt', magnetLink.trim());
+        else if (clear.includes('magnet')) await remove(matching(n => n.startsWith('magnet') && n.endsWith('.txt')));
 
-        // Évadok / epizódok (sorozat) vagy egyetlen stream (film)
+        // Sorozatnál a részek az episodes.json-ba, filmnél a link a stream.txt-be kerül — a másik
+        // fájl ilyenkor elavult (pl. kategóriaváltás után), és felülírná az újat, ezért törlődik.
+        const isSeries = category === 'Sorozat';
         const playback = this._playbackData({ seasons, episodes });
-        if (playback.requested) {
-            await this.upsertTextFile(folderId, 'episodes.json', playback.json);
-        } else if (streamUrl?.trim()) {
-            await this.upsertTextFile(folderId, 'stream.txt', toEmbedUrl(streamUrl));
+        if (isSeries && playback.cleaned.length) {
+            await upsert('episodes.json', playback.json);
+            await remove(named('stream.txt', 'streamtape.txt'));
+        } else if (!isSeries && streamUrl?.trim()) {
+            await upsert('stream.txt', toEmbedUrl(streamUrl));
+            await remove(named('episodes.json', 'episodes.txt'));
+        }
+        if (clear.includes('stream')) await remove(named('stream.txt', 'streamtape.txt'));
+        if (clear.includes('episodes')) {
+            await remove(named('episodes.json', 'episodes.txt', ...(isSeries ? ['stream.txt', 'streamtape.txt'] : [])));
         }
 
-        if (downloadUrl?.trim()) await this.upsertTextFile(folderId, 'download.txt', downloadUrl.trim());
-        if (trailers?.length) await this.upsertTextFile(folderId, 'trailers.txt', trailers.join('\n'));
-        if (torrentFile) await this.uploadFile(torrentFile, folderId, torrentFile.name);
-        if (description?.trim()) await this.upsertTextFile(folderId, 'leiras.txt', description);
+        if (downloadUrl?.trim()) await upsert('download.txt', downloadUrl.trim());
+        else if (clear.includes('download')) await remove(named('download.txt', 'letoltes.txt'));
+
+        if (trailers?.length) await upsert('trailers.txt', trailers.join('\n'));
+        else if (clear.includes('trailers')) await remove(named('trailers.txt', 'trailer.txt'));
+
+        // Új torrent fájl a régit váltja (különben kettő lenne, és a véletlen döntene)
+        if (torrentFile) {
+            await remove(matching(n => n.endsWith('.torrent')));
+            await this.uploadFile(torrentFile, folderId, torrentFile.name);
+        }
+
+        if (description?.trim()) await upsert('leiras.txt', description);
+        else if (clear.includes('description')) {
+            await remove(matching(n => n === 'description.txt' || (n.startsWith('leiras') && n.endsWith('.txt'))));
+        }
+
+        if (subtitlePlan) await this.syncSubtitles(folderId, subtitlePlan);
 
         this.clearCache();
         return { id: folderId };

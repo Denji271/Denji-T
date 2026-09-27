@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Sora:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/style.css?v=3">
     <link rel="icon" href="icon.jpg">
 </head>
 <body>
@@ -315,18 +315,25 @@
 
             <fieldset class="form-block">
                 <legend class="label">Lejátszás</legend>
+                <!-- Közös .txt tallózó: filmnél egy link, sorozatnál évadokra és részekre bontva -->
+                <input type="file" id="stream-txt-input" accept=".txt,text/plain" hidden>
+
                 <div class="line-field" id="film-stream-group">
                     <label class="label" for="add-stream">Streamtape link</label>
-                    <input type="text" id="add-stream" class="line-input" placeholder="https://streamtape.com/v/…">
+                    <div class="input-row txt-drop">
+                        <input type="text" id="add-stream" class="line-input" placeholder="https://streamtape.com/v/… — vagy húzz ide egy .txt fájlt">
+                        <button type="button" class="pill pill-light pill-sm" data-pick-txt data-no-game>.txt feltöltése</button>
+                    </div>
+                    <span class="label-hint" data-no-game>Egy link → film. Ha a .txt-ben több link van, sorozatra vált, és kitalálja, melyik link melyik évad és rész.</span>
                 </div>
 
                 <div id="series-stream-group" style="display:none">
-                    <div class="line-field bulk-links-container">
+                    <div class="line-field bulk-links-container txt-drop">
                         <div class="bulk-field-head">
-                            <label class="label" for="add-series-bulk-links">Streamtape linkek tömeges bemásolása</label>
+                            <label class="label" for="add-series-bulk-links">Streamtape linkek — bemásolva vagy .txt fájlból</label>
                             <span class="label-hint">Automatikusan felismeri az évadokat és részeket</span>
                         </div>
-                        <textarea id="add-series-bulk-links" class="line-input" rows="4" placeholder="Illeszd be ide az összes Streamtape linket (akár soronként, vegyesen, S01E01 formátumban vagy fájlnévvel)...
+                        <textarea id="add-series-bulk-links" class="line-input" rows="4" placeholder="Illeszd be ide az összes Streamtape linket, vagy húzz ide egy .txt fájlt…
 Például:
 https://streamtape.com/v/xxxx/Sorozat.S01E01.mp4
 https://streamtape.com/v/yyyy/Sorozat.S01E02.mp4
@@ -335,6 +342,7 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
                             <button type="button" id="btn-parse-series-links" class="pill pill-light pill-sm">
                                 <span>⚡ Automatikus felismerés és betöltés</span>
                             </button>
+                            <button type="button" class="pill pill-light pill-sm" data-pick-txt>.txt feltöltése</button>
                             <button type="button" id="btn-clear-bulk-links" class="link-quiet btn-clear-bulk" style="display:none;">Törlés</button>
                             <span id="bulk-parse-status" class="bulk-status-badge" style="display:none;"></span>
                         </div>
@@ -354,6 +362,17 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
                 </div>
             </fieldset>
 
+            <!-- Játéknál nincs értelme, ott rejtve marad -->
+            <fieldset class="form-block" id="subs-block">
+                <legend class="label">Feliratok</legend>
+                <div id="subs-drop" class="drop drop-slim" role="button" tabindex="0" aria-label="Feliratfájlok kiválasztása">
+                    <span class="drop-text">Húzd ide a feliratokat (.srt, .vtt, .ass) — akár egyszerre az összeset, vagy kattints a tallózáshoz</span>
+                    <input type="file" id="subs-input" accept=".srt,.vtt,.ass,.ssa" multiple hidden>
+                </div>
+                <span class="label-hint">A fájlnévből és a szövegből kitalálja, melyik részhez tartozik és milyen nyelvű — ha kell, itt javíthatod.</span>
+                <div class="subs-list" id="subs-list"></div>
+            </fieldset>
+
             <fieldset class="form-block">
                 <legend class="label">Letöltés</legend>
                 <div class="line-field">
@@ -365,8 +384,13 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
                     <input type="text" id="add-download" class="line-input" placeholder="https://…">
                 </div>
                 <div class="line-field">
-                    <label class="label" for="torrent-input">Torrent fájl</label>
-                    <input type="file" id="torrent-input" accept=".torrent" class="line-input file">
+                    <span class="label">Torrent fájl</span>
+                    <div class="file-pick">
+                        <button type="button" class="pill pill-light pill-sm" id="torrent-pick">Tallózás…</button>
+                        <span class="file-pick-name" id="torrent-name">Nincs kiválasztva</span>
+                        <button type="button" class="link-quiet" id="torrent-clear" hidden>mégse</button>
+                        <input type="file" id="torrent-input" accept=".torrent" hidden>
+                    </div>
                 </div>
             </fieldset>
 
@@ -449,11 +473,12 @@ vagy: 1. évad 1. rész https://streamtape.com/v/xxxx"></textarea>
 <div id="scroll-progress" aria-hidden="true"><span></span></div>
 
 <script src="https://accounts.google.com/gsi/client" async defer></script>
-<script src="js/config.js"></script>
-<script src="js/auth.js"></script>
-<script src="js/drive.js"></script>
-<script src="js/ui.js"></script>
-<script src="js/player.js"></script>
-<script src="js/app.js"></script>
+<script src="js/config.js?v=3"></script>
+<script src="js/auth.js?v=3"></script>
+<script src="js/media-parse.js?v=3"></script>
+<script src="js/drive.js?v=3"></script>
+<script src="js/ui.js?v=3"></script>
+<script src="js/player.js?v=3"></script>
+<script src="js/app.js?v=3"></script>
 </body>
 </html>

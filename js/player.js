@@ -41,32 +41,9 @@ const fmtTime = (sec) => {
     return h ? `${h}:${String(m).padStart(2, '0')}:${rest}` : `${m}:${rest}`;
 };
 
-/* ---------------- Felirat ---------------- */
-
-const SUB_LANGS = [
-    [/(^|[^a-z])(hu|hun|hungarian|magyar)([^a-z]|$)/i, 'Magyar'],
-    [/(^|[^a-z])(en|eng|english|angol)([^a-z]|$)/i, 'Angol'],
-];
-
-/* A felirat neve a fájlnévből; nyelvjelölés híján egyszerűen „Felirat” */
-function subtitleLabels(subs) {
-    let unnamed = 0;
-    return subs.map(sub => {
-        const hit = SUB_LANGS.find(([re]) => re.test(sub.name.replace(/\.(srt|vtt)$/i, '')));
-        if (hit) return hit[1];
-        unnamed++;
-        return unnamed > 1 ? `Felirat ${unnamed}` : 'Felirat';
-    });
-}
-
-/* A magyar feliratok gyakran Windows-1250 kódolásúak, nem UTF-8 */
-function decodeSubtitle(buf) {
-    try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(buf);
-    } catch (e) {
-        return new TextDecoder('windows-1250').decode(buf);
-    }
-}
+/* ---------------- Felirat ----------------
+ * A menüfeliratok (subtitleLabels) és a kódolásfelismerés (decodeText) a media-parse.js-ben
+ * vannak, mert a feltöltő űrlap is ugyanazokkal dolgozik. */
 
 function srtToVtt(text) {
     const body = text.replace(/^﻿/, '').replace(/\r\n?/g, '\n');
@@ -480,9 +457,21 @@ class Player {
 
     /* ---------------- Felirat ---------------- */
 
+    /* Magyar, utána angol, végül az első. A sima felirat előbb jön, mint az SDH (zajleírásos),
+       a „forced” (csak az idegen nyelvű részeket fordító) pedig csak akkor, ha nincs teljes. */
     preferredSub() {
-        const labels = subtitleLabels(this.ctx?.subtitles || []);
-        return Math.max(0, labels.indexOf('Magyar'));
+        const infos = (this.ctx?.subtitles || []).map(sub => subtitleNameInfo(sub.name));
+        const tests = [
+            (i, lang) => i.lang === lang && !i.forced && !i.sdh,
+            (i, lang) => i.lang === lang && !i.forced,
+        ];
+        for (const lang of ['hu', 'en']) {
+            for (const test of tests) {
+                const idx = infos.findIndex(i => test(i, lang));
+                if (idx >= 0) return idx;
+            }
+        }
+        return Math.max(0, infos.findIndex(i => !i.forced));
     }
 
     async selectSub(index) {
@@ -498,9 +487,7 @@ class Player {
         const token = ++this._subToken;
 
         try {
-            const res = await fetch(`${DRIVE_FILES}/${sub.id}?alt=media&key=${CONFIG.GOOGLE_API_KEY}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const vtt = srtToVtt(decodeSubtitle(await res.arrayBuffer()));
+            const vtt = srtToVtt(decodeText(await driveAPI.fetchFileBytes(sub.id)));
             if (token !== this._subToken) return;   // közben másik feliratra vagy részre váltott
 
             const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));

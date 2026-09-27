@@ -1414,17 +1414,19 @@ select option { background: var(--night); color: var(--fg); }
     transition: bottom var(--t-move);
 }
 .pl-awake .pl-subs, .pl-paused .pl-subs { bottom: calc(var(--pl-bar-space, 88px) + 12px); }
+/* Netflix-szerű felirat: háttér nélkül, fehér betű lágy, szürkésfekete árnyékkal —
+   a vékony belső réteg világos képen is kiemeli a betűt, a szélesebb külső lágyan elmos */
 .pl-subs span {
     padding: 2px 12px;
-    border-radius: var(--r-xs);
-    background: rgba(5, 4, 13, 0.72);
     font-size: clamp(14px, 2.1vw, 28px);
     font-weight: 500;
     line-height: 1.4;
     color: #fff;
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-    -webkit-box-decoration-break: clone;
-    box-decoration-break: clone;
+    text-shadow:
+        0 0 1px rgba(0, 0, 0, 0.9),
+        0 0 3px rgba(0, 0, 0, 0.75),
+        0 1px 4px rgba(0, 0, 0, 0.7),
+        0 2px 10px rgba(0, 0, 0, 0.45);
 }
 
 /* Kártyák: folytatás, következő rész */
@@ -1605,6 +1607,8 @@ select option { background: var(--night); color: var(--fg); }
 }
 
 .form-block {
+    /* A fieldset alapból nem lehet keskenyebb a tartalmánál — telefonon kilógna */
+    min-width: 0;
     display: flex; flex-direction: column; gap: var(--s-16);
     padding: var(--s-24);
     background: var(--glass);
@@ -1614,7 +1618,19 @@ select option { background: var(--night); color: var(--fg); }
     -webkit-backdrop-filter: blur(14px);
     box-shadow: var(--edge);
 }
-.form-block legend { padding-bottom: 4px; }
+/* A <legend> alapból a keret vonalába ül, és a háttér fölötte is kirajzolódik (kettős
+   felső él). Úsztatva sima első elemmé válik a dobozon belül. */
+.form-block legend { float: left; width: 100%; padding: 0 0 4px; }
+
+/* Legördülő nyíl (az appearance: none elviszi a böngészőét) */
+select.line-input, select.line-input:focus, .sub-lang {
+    background-image: linear-gradient(45deg, transparent 50%, var(--fg-muted) 50%), linear-gradient(135deg, var(--fg-muted) 50%, transparent 50%);
+    background-position: calc(100% - 18px) 52%, calc(100% - 13px) 52%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+}
+/* Üres kötelező választó: a „Válassz…” ugyanolyan halvány, mint a többi mező súgószövege */
+select.line-input:invalid { color: var(--fg-faint); }
 
 .form-grid {
     display: grid;
@@ -1727,18 +1743,33 @@ select option { background: var(--night); color: var(--fg); }
     border-radius: var(--r-md);
 }
 .season-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.season-label { display: inline-flex; align-items: center; gap: 2px; }
+.season-num {
+    width: 54px;
+    padding: 5px 8px;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+    font-size: 13px;
+    text-align: center;
+}
 .episodes-editor { display: flex; flex-direction: column; gap: 8px; }
 .ep-row { display: flex; align-items: center; gap: 8px; }
 .ep-num {
-    flex: 0 0 62px;
+    flex: 0 0 68px;
+    width: 68px;
     padding: 8px 10px;
     background: rgba(0, 0, 0, 0.28);
     border: 1px solid var(--line);
     border-radius: var(--r-xs);
     font-size: 13px;
+    text-align: center;
 }
+.season-num:focus, .ep-num:focus, .ep-url:focus,
+.sub-num input:focus, .sub-lang:focus { border-color: var(--accent-line); }
 .ep-url {
     flex: 1;
+    min-width: 0;
     padding: 8px 10px;
     background: rgba(0, 0, 0, 0.28);
     border: 1px solid var(--line);
@@ -1755,6 +1786,102 @@ select option { background: var(--night); color: var(--fg); }
     transition: background var(--t-micro), color var(--t-micro);
 }
 .icon-x:hover { background: rgba(255, 122, 122, 0.16); color: var(--bad); }
+
+/* Mező + mellette gomb (Streamtape link + .txt feltöltés) */
+.input-row { display: flex; align-items: center; gap: 10px; }
+.input-row .line-input { flex: 1 1 auto; min-width: 0; }
+.input-row .pill { flex: 0 0 auto; }
+
+/* Ráhúzott fájl fogadása */
+.txt-drop { border-radius: var(--r-md); transition: box-shadow var(--t-micro), background var(--t-micro); }
+.txt-drop.drag-over { box-shadow: 0 0 0 2px var(--accent); background: var(--accent-soft); }
+
+.drop-slim { min-height: 76px; }
+
+/* Saját fájlválasztó — a böngésző angol „Choose File” gombja helyett */
+.file-pick {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 12px;
+    padding: 9px 12px;
+    background: rgba(0, 0, 0, 0.24);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+}
+.file-pick-name {
+    flex: 1 1 160px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+    color: var(--fg-muted);
+}
+.file-pick-name.is-set { color: var(--fg); }
+
+/* Feliratok listája */
+.subs-list { display: flex; flex-direction: column; gap: 8px; }
+.sub-row {
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    transition: opacity var(--t-micro);
+}
+.sub-row.is-existing { border-style: dashed; }
+.sub-row.is-gone { opacity: 0.55; }
+.sub-row.is-gone .sub-name { text-decoration: line-through; }
+.sub-main { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sub-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 13.5px;
+}
+.sub-meta { font-size: 11.5px; color: var(--fg-faint); }
+.sub-meta .link-quiet { font-size: 11.5px; color: var(--accent-2); }
+.sub-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.sub-num {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--fg-muted);
+}
+.sub-num input {
+    width: 58px;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xs);
+    font-size: 13px;
+    text-align: center;
+}
+.sub-lang {
+    width: auto;
+    min-width: 128px;
+    padding: 6px 30px 6px 10px;
+    font-size: 13px;
+    border-radius: var(--r-xs);
+    background-color: rgba(0, 0, 0, 0.28);
+    background-position: calc(100% - 16px) 52%, calc(100% - 11px) 52%;
+}
+.sub-state {
+    min-width: 88px;
+    font-size: 12px;
+    text-align: right;
+    color: var(--ok);
+}
+.sub-state[data-tone="warn"] { color: var(--warn); }
+.sub-state[data-tone="bad"] { color: var(--bad); }
+
+@media (max-width: 520px) {
+    .input-row { flex-direction: column; align-items: stretch; }
+    .bulk-actions-row .pill { white-space: normal; text-align: center; }
+    /* Keskeny kijelzőn a ✕ a sor sarkába kerül, az állapot külön sorba */
+    .sub-row { position: relative; padding-right: 44px; }
+    .sub-row .sub-controls > .icon-x { position: absolute; top: 8px; right: 8px; }
+    .sub-controls { width: 100%; }
+    .sub-lang { flex: 1 1 110px; min-width: 0; }
+    .sub-num input { width: 48px; }
+    .sub-state { flex: 1 1 100%; min-width: 0; text-align: left; }
+}
 
 /* Belépési kódok */
 .code-list { display: flex; flex-direction: column; gap: 8px; }

@@ -9,8 +9,6 @@ const KEY_WATCH = 'denjit_watch';
 // A Streamtape get_video tokenjei időkorlátosak, ezért rövid életű a gyorsítótár.
 const STREAM_CACHE_TTL = 5 * 60 * 1000;
 const YOUTUBE_ID_RE = /(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/;
-// Az űrlapra bemásolt szövegből a linkeket, illetve a köréjük került írásjeleket szedi ki
-const URL_RE = /(https?:\/\/[^\s"'<>]+)/g;
 
 class App {
     constructor() {
@@ -31,6 +29,11 @@ class App {
         this._streamCache = new Map();
         this._playToken = 0;
         this.player = null;
+        // Admin űrlap: feltöltendő / meglévő feliratok, illetve a szerkesztés kiinduló állapota
+        this.subsDraft = [];
+        this._subUid = 0;
+        this._editOriginal = null;
+        this._coverObjectUrl = null;
     }
 
     /* ============================================================
@@ -433,10 +436,12 @@ class App {
         track.innerHTML = items.map(t => {
             const w = this.watch[t.id];
             const rec = this.recent.find(r => r.id === t.id);
-            const percent = this.progressOf(t, this.playableInfo(t));
-            const resume = (w && w.s != null)
-                ? `${w.s + 1}. évad ${w.e + 1}. rész`
-                : 'Megnyitás';
+            const info = this.playableInfo(t);
+            const percent = this.progressOf(t, info);
+            // A mentett pozíció sorszám (index) — a kiírásba a valódi évad- és részszám kell
+            const season = w?.s != null ? info.seasons?.[w.s] : null;
+            const ep = season?.episodes?.[w.e];
+            const resume = ep ? `${season.season}. évad ${ep.ep}. rész` : 'Megnyitás';
             return `
                 <article class="cont" data-id="${t.id}">
                     <button class="cont-open" data-cont-act="open">
@@ -728,6 +733,46 @@ class App {
         document.getElementById('add-series-bulk-links')?.addEventListener('paste', () => {
             setTimeout(() => this.handleBulkSeriesLinks(true), 60);
         });
+
+        // .txt linklista a Streamtape mezőbe (gombbal vagy ráhúzva)
+        const txtInput = document.getElementById('stream-txt-input');
+        document.querySelectorAll('[data-pick-txt]').forEach(btn => btn.addEventListener('click', () => txtInput?.click()));
+        txtInput?.addEventListener('change', () => {
+            this.importStreamTxt(txtInput.files[0]);
+            txtInput.value = '';   // ugyanaz a fájl újra kiválasztható legyen
+        });
+        document.querySelectorAll('.txt-drop').forEach(zone =>
+            this.bindFileDrop(zone, (files) => this.importStreamTxt(files[0])));
+
+        // Feliratok
+        const subsDrop = document.getElementById('subs-drop');
+        const subsInput = document.getElementById('subs-input');
+        subsDrop?.addEventListener('click', () => subsInput?.click());
+        subsDrop?.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            subsInput?.click();
+        });
+        subsInput?.addEventListener('change', () => {
+            this.addSubtitleFiles(subsInput.files);
+            subsInput.value = '';
+        });
+        if (subsDrop) this.bindFileDrop(subsDrop, (files) => this.addSubtitleFiles(files));
+        this.bindSubtitleList();
+
+        // Torrent fájl
+        const torrentInput = document.getElementById('torrent-input');
+        document.getElementById('torrent-pick')?.addEventListener('click', () => torrentInput?.click());
+        torrentInput?.addEventListener('change', () => this.syncTorrentPicker());
+        document.getElementById('torrent-clear')?.addEventListener('click', () => {
+            torrentInput.value = '';
+            this.syncTorrentPicker();
+        });
+
+        // A mezők mellé ejtett fájlt a böngésző megnyitná — és elveszne a kitöltött űrlap
+        ['dragover', 'drop'].forEach(ev => window.addEventListener(ev, (e) => {
+            if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
+        }));
         document.getElementById('add-form')?.addEventListener('submit', async (e) => {
             e.preventDefault();
             await this.handleAddTorrent();
@@ -1093,20 +1138,20 @@ class App {
     renderDescription(t, modal) {
         const el = modal.querySelector('.detail-description');
         if (!el) return;
-        if (t.description?.trim()) {
+        const none = 'Ehhez a tartalomhoz nincs leírás.';
+        if (t.description?.trim() && !t.descriptionCut) {
             el.textContent = t.description.trim();
         } else if (t.descriptionFileId) {
-            el.textContent = 'Leírás betöltése…';
+            // A gyorsítótárból jött, rövidített leírás látszik, amíg a teljes megérkezik
+            el.textContent = t.description?.trim() || 'Leírás betöltése…';
             driveAPI.readTextFile(t.descriptionFileId, t.title).then(text => {
-                if (this.currentDetailId !== t.id) return;
                 if (text?.trim()) {
                     t.description = text.trim();
-                    el.textContent = t.description;
-                } else {
-                    el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
+                    delete t.descriptionCut;
                 }
+                if (this.currentDetailId === t.id) el.textContent = t.description?.trim() || none;
             }).catch(() => {
-                if (this.currentDetailId === t.id) el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
+                if (this.currentDetailId === t.id) el.textContent = t.description?.trim() || none;
             });
         } else {
             el.textContent = 'Ehhez a tartalomhoz nincs leírás.';
@@ -1114,9 +1159,7 @@ class App {
     }
 
     embedUrl(url) {
-        let u = (url || '').trim();
-        if (u.includes('streamtape.com/v/')) u = u.replace('streamtape.com/v/', 'streamtape.com/e/');
-        return u;
+        return normalizeStreamUrl(url);
     }
 
     /* --- Reklámmentes lejátszás ------------------------------------------
@@ -1126,7 +1169,7 @@ class App {
        az eredeti iframe-es beágyazásra. */
 
     isStreamtape(url) {
-        return /streamtape\.com\/(?:v|e|r)\//i.test(url || '');
+        return isStreamtapeUrl(url);
     }
 
     async resolveStream(url) {
@@ -1270,10 +1313,13 @@ class App {
 
         ctx.key = `${t.id}:${sIdx}-${eIdx}`;
         ctx.title = `${t.title} · ${item.label}`;
-        // Sorozatnál a felirat fájlnevében lévő S01E02 dönti el, melyik részhez tartozik
+        // Sorozatnál a felirat fájlneve (S01E02, 1x02, „Show - 05”) dönti el, melyik részhez tartozik.
+        // Évad nélküli névnél egyévados sorozatban ez az évad, különben az 1. számít.
         ctx.subtitles = ctx.subtitles.filter(sub => {
-            const m = sub.name.match(/s(\d{1,2})[\s._-]*e(\d{1,3})/i) || sub.name.match(/(\d{1,2})x(\d{2,3})/i);
-            return m && Number(m[1]) === Number(season.season) && Number(m[2]) === Number(ep.ep);
+            const info = subtitleEpisode(sub.name);
+            if (info.episode !== Number(ep.ep)) return false;
+            const s = info.season ?? (seasons.length === 1 ? Number(season.season) : 1);
+            return s === Number(season.season);
         });
 
         const next = this.relativeEpisode(1);
@@ -1507,12 +1553,7 @@ class App {
         const input = document.getElementById('cover-input');
         if (!drop || !input) return;
 
-        const preview = (file) => {
-            const box = document.getElementById('cover-preview');
-            if (!box || !file) return;
-            box.querySelector('img').src = URL.createObjectURL(file);
-            box.hidden = false;
-        };
+        const preview = (file) => { if (file) this.setCoverPreview(file); };
 
         ['dragover', 'dragenter'].forEach(ev =>
             drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('drag-over'); }));
@@ -1532,6 +1573,27 @@ class App {
         input.addEventListener('change', () => { if (input.files[0]) preview(input.files[0]); });
     }
 
+    /* Borító előnézet: új fájl (File) vagy a meglévő borító URL-je; null = nincs.
+       A fájlból készült ideiglenes URL-t felszabadítjuk, ha már nem kell. */
+    setCoverPreview(source) {
+        const box = document.getElementById('cover-preview');
+        if (!box) return;
+        if (this._coverObjectUrl) {
+            URL.revokeObjectURL(this._coverObjectUrl);
+            this._coverObjectUrl = null;
+        }
+        const img = box.querySelector('img');
+        if (!source) {
+            img.removeAttribute('src');
+            box.hidden = true;
+            return;
+        }
+        if (source instanceof Blob) this._coverObjectUrl = URL.createObjectURL(source);
+        img.referrerPolicy = 'no-referrer';
+        img.src = this._coverObjectUrl || source;
+        box.hidden = false;
+    }
+
     updateStreamFormByCategory() {
         const category = document.getElementById('add-category')?.value;
         const film = document.getElementById('film-stream-group');
@@ -1539,368 +1601,488 @@ class App {
         const magyar = document.getElementById('magyar-group');
 
         if (magyar) magyar.style.display = (category === 'Film' || category === 'Sorozat') ? 'inline-flex' : 'none';
+        // Játékhoz nem tartozik felirat, és részekre sem bontható
+        const isGame = category === 'Játék';
+        document.getElementById('subs-block')?.toggleAttribute('hidden', isGame);
+        document.querySelectorAll('[data-no-game]').forEach(el => el.toggleAttribute('hidden', isGame));
+        const streamField = document.getElementById('add-stream');
+        if (streamField) {
+            streamField.placeholder = isGame
+                ? 'https://streamtape.com/v/…'
+                : 'https://streamtape.com/v/… — vagy húzz ide egy .txt fájlt';
+        }
         if (!film || !series) return;
 
+        const streamInput = document.getElementById('add-stream');
         if (category === 'Sorozat') {
             film.style.display = 'none';
             series.style.display = 'block';
             const editor = document.getElementById('seasons-editor');
-            if (editor && !editor.children.length) this.addSeasonBlock(null, 1);
+            if (editor && !editor.children.length) {
+                // A filmként megadott link nem vész el: az 1. évad 1. része lesz
+                const filmUrl = streamInput?.value.trim();
+                this.addSeasonBlock(filmUrl ? [{ ep: 1, url: filmUrl }] : null, 1);
+            }
         } else {
             film.style.display = 'block';
             series.style.display = 'none';
+            // Visszafelé is: egyetlen részből film-link lesz, ha az még üres
+            const seasons = this.collectSeasonsFromForm();
+            if (streamInput && !streamInput.value.trim() && seasons.length === 1 && seasons[0].episodes.length === 1) {
+                streamInput.value = seasons[0].episodes[0].url;
+            }
         }
+        // Sorozatnál a feliratokhoz évad és rész is tartozik
+        this.renderSubtitleRows();
     }
 
-    /* --- Intelligens Streamtape link felismerő algoritmus --- */
-    parseStreamtapeLinks(rawText) {
-        if (!rawText || !rawText.trim()) return [];
+    /* --- Streamtape linklista: bemásolt szöveg vagy .txt → évadok és részek (media-parse.js) --- */
 
-        const lines = rawText.split(/\r?\n/);
-        let currentSeason = 1;
-        const autoEpisodeBySeason = {};
-        const items = [];
-        let detectedTitle = '';
-
-        function safeDecode(str) {
-            try {
-                return decodeURIComponent(str);
-            } catch {
-                return str;
-            }
+    /* A felismert évadok betöltése a szerkesztőbe, összegzés a státuszsorban */
+    applyParsedLinks(parsed, { notify = true } = {}) {
+        if (!parsed.linkCount) {
+            this.setBulkStatus('Nem található érvényes link a megadott szövegben.', true);
+            if (notify) UI.toast('Nem található érvényes link.', 'error');
+            return false;
         }
 
-        /* A linket körülvevő zárójelek, idézőjelek és írásjelek levágása */
-        function trimUrlPunctuation(url) {
-            let clean = url.replace(/^[<"'({\[]+/, '').replace(/[>,"');}\]]+$/, '');
-            if (clean.endsWith(')') && !clean.includes('(')) clean = clean.slice(0, -1);
-            if (clean.endsWith(']') && !clean.includes('[')) clean = clean.slice(0, -1);
-            return clean;
-        }
+        const titleInput = document.getElementById('add-title');
+        if (titleInput && !titleInput.value.trim() && parsed.title) titleInput.value = parsed.title;
 
-        function matchSeasonHeader(line) {
-            const trimmed = line.trim();
-            const sMatch = trimmed.match(/^(?:==+|\*\*+|##+)?\s*(?:(?:(\d{1,2})\.?\s*(?:évad|evad|season|s(?!\w)))|(?:(?:évad|evad|season|s)\s*(\d{1,2})))\s*:?\s*(?:==+|\*\*+|##+)?$/i);
-            if (sMatch) {
-                return parseInt(sMatch[1] || sMatch[2], 10);
-            }
-            return null;
-        }
+        const editor = document.getElementById('seasons-editor');
+        if (editor) editor.innerHTML = '';
+        parsed.seasons.forEach(s => this.addSeasonBlock(s.episodes, s.season));
 
-        function extractTitle(str) {
-            if (detectedTitle || !str) return;
-            const m = str.match(/^([a-zA-Z0-9_\-.\s]+?)(?:[._\s-]+(?:s\d{1,2}|season|\d{1,2}\.?\s*(?:évad|evad)|\d{1,2}x\d{1,2}))/i);
-            if (m && m[1]) {
-                let t = m[1].replace(/[._\-]+/g, ' ').trim();
-                if (t.length > 2 && !/^(https?|www|streamtape)/i.test(t)) {
-                    detectedTitle = t;
-                }
-            }
-        }
+        const seasonCount = parsed.seasons.length;
+        const notes = [];
+        if (parsed.guessed) notes.push(`${parsed.guessed} rész száma a sorrendből`);
+        if (parsed.duplicates) notes.push(`${parsed.duplicates} ismétlődő kihagyva`);
+        if (parsed.ignored) notes.push(`${parsed.ignored} nem Streamtape link kihagyva`);
+        const titleMsg = parsed.title ? ` (${parsed.title})` : '';
+        this.setBulkStatus(`✅ Felismerve${titleMsg}: ${seasonCount} évad, ${parsed.linkCount} rész${notes.length ? ' · ' + notes.join(' · ') : ''}`);
+        this.updateSeasonsSummaryBadge();
 
-        function extractSeasonAndEpisode(text, urlStr, fallbackSeason) {
-            let season = null;
-            let episode = null;
+        if (notify) UI.toast(`Sikeres felismerés: ${seasonCount} évad, ${parsed.linkCount} rész betöltve!`, 'success');
+        return true;
+    }
 
-            let decodedUrl = '';
-            let filename = '';
-            try {
-                const parsedUrl = new URL(urlStr);
-                decodedUrl = safeDecode(parsedUrl.pathname);
-                const parts = decodedUrl.split('/');
-                filename = parts[parts.length - 1] || '';
-            } catch {
-                decodedUrl = safeDecode(urlStr);
-                const parts = decodedUrl.split('/');
-                filename = parts[parts.length - 1] || '';
-            }
-
-            const textWithoutUrl = text.replace(urlStr, ' ').trim();
-            const candidates = [textWithoutUrl, filename, decodedUrl];
-
-            if (filename) extractTitle(filename);
-            if (textWithoutUrl) extractTitle(textWithoutUrl);
-
-            // 1. S01E02, s1e02, S01.E02, S01 - E02
-            for (const str of candidates) {
-                if (!str) continue;
-                const seMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:s|season)?\.?\s*(\d{1,2})[._\s-]*[eE](?:p|pisode|izod|izód)?\.?\s*(\d{1,3})(?:[^a-zA-Z0-9]|$)/i);
-                if (seMatch) {
-                    season = parseInt(seMatch[1], 10);
-                    episode = parseInt(seMatch[2], 10);
-                    return { season, episode };
-                }
-            }
-
-            // 2. Magyar jelölések: "1. évad 2. rész", "1_evad_2_resz", "2.évad.1.rész"
-            for (const str of candidates) {
-                if (!str) continue;
-                const hunMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(\d{1,2})[._\s-]*(?:évad|evad)[._\s-]*(?:rész|resz|epizód|epizod|ep)?\.?[._\s-]*(\d{1,3})[._\s-]*(?:rész|resz|epizód|epizod|ep)?)(?:[^a-zA-Z0-9]|$)/i)
-                    || str.match(/(?:^|[^a-zA-Z0-9])(?:(?:évad|evad)[._\s-]*(\d{1,2})[._\s-]*(?:rész|resz|epizód|epizod|ep)[._\s-]*(\d{1,3}))(?:[^a-zA-Z0-9]|$)/i);
-                if (hunMatch) {
-                    season = parseInt(hunMatch[1], 10);
-                    episode = parseInt(hunMatch[2], 10);
-                    return { season, episode };
-                }
-            }
-
-            // 3. 1x02, 01x02 (felbontások mint 1920x1080 kizárásával)
-            for (const str of candidates) {
-                if (!str) continue;
-                const xMatch = str.match(/(?:^|[^a-zA-Z0-9])(\d{1,2})[xX](\d{1,3})(?:[^a-zA-Z0-9]|$)/);
-                if (xMatch) {
-                    const s = parseInt(xMatch[1], 10);
-                    const e = parseInt(xMatch[2], 10);
-                    if (s < 100 && e < 500) {
-                        season = s;
-                        episode = e;
-                        return { season, episode };
-                    }
-                }
-            }
-
-            // 4. 3-jegyű scene jelölés: pl. 101 -> S01E01, 208 -> S02E08
-            for (const str of candidates) {
-                if (!str || (season !== null && episode !== null)) continue;
-                const m3 = str.match(/(?:^|[^a-zA-Z0-9])([1-9])([0-9]{2})(?:[^a-zA-Z0-9]|$)/);
-                if (m3) {
-                    const s = parseInt(m3[1], 10);
-                    const e = parseInt(m3[2], 10);
-                    const num = parseInt(m3[0].replace(/\D/g, ''), 10);
-                    if (![720, 480, 360, 240, 144, 108, 264, 265].includes(num)) {
-                        season = s;
-                        episode = e;
-                        return { season, episode };
-                    }
-                }
-            }
-
-            // 5. Különálló évad jelölés
-            for (const str of candidates) {
-                if (!str || season !== null) continue;
-                const sMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,2})[._\s-]*(?:évad|evad|season))|(?:(?:évad|evad|season)[._\s-]*(\d{1,2})))(?:[^a-zA-Z0-9]|$)/i)
-                    || str.match(/(?:^|[^a-zA-Z0-9])[sS](\d{1,2})(?:[^a-zA-Z0-9]|$)/);
-                if (sMatch) {
-                    season = parseInt(sMatch[1] || sMatch[2], 10);
-                }
-            }
-
-            // 6. Különálló rész jelölés
-            for (const str of candidates) {
-                if (!str || episode !== null) continue;
-                const eMatch = str.match(/(?:^|[^a-zA-Z0-9])(?:(?:(\d{1,3})[._\s-]*(?:rész|resz|epizód|epizod|ep))|(?:(?:rész|resz|epizód|epizod|episode|ep)[._\s-]*(\d{1,3})))(?:[^a-zA-Z0-9]|$)/i)
-                    || str.match(/(?:^|[^a-zA-Z0-9])[eE](\d{1,3})(?:[^a-zA-Z0-9]|$)/);
-                if (eMatch) {
-                    episode = parseInt(eMatch[1] || eMatch[2], 10);
-                }
-            }
-
-            // 7. Fájlnév számozás (pl. "Bleach_-_01_[1080p].mp4" vagy "Naruto.05.mp4")
-            if (episode === null && filename) {
-                const fnMatch = filename.match(/[._\s-–]0*(\d{1,3})(?:v\d)?\s*(?:\.(?:mp4|mkv|avi|webm)|[._\s-–](?:1080p|720p|480p|hdtv|web-dl|bluray|x264|x265|hevc))/i);
-                if (fnMatch) {
-                    episode = parseInt(fnMatch[1], 10);
-                }
-            }
-
-            if (season === null) {
-                season = fallbackSeason || 1;
-            }
-
-            return { season, episode };
-        }
-
-        for (const rawLine of lines) {
-            const line = rawLine.trim();
-            if (!line) continue;
-
-            const sHeader = matchSeasonHeader(line);
-            if (sHeader !== null) {
-                currentSeason = sHeader;
-                continue;
-            }
-
-            const matchedUrls = line.match(URL_RE);
-
-            if (matchedUrls && matchedUrls.length > 0) {
-                for (const url of matchedUrls) {
-                    const cleanUrl = trimUrlPunctuation(url);
-
-                    const { season, episode } = extractSeasonAndEpisode(line, cleanUrl, currentSeason);
-                    const finalSeason = season || currentSeason;
-
-                    if (!autoEpisodeBySeason[finalSeason]) {
-                        autoEpisodeBySeason[finalSeason] = 0;
-                    }
-
-                    let finalEpisode = episode;
-                    if (finalEpisode === null || isNaN(finalEpisode)) {
-                        autoEpisodeBySeason[finalSeason] += 1;
-                        finalEpisode = autoEpisodeBySeason[finalSeason];
-                    } else {
-                        autoEpisodeBySeason[finalSeason] = Math.max(autoEpisodeBySeason[finalSeason], finalEpisode);
-                    }
-
-                    items.push({
-                        season: finalSeason,
-                        episode: finalEpisode,
-                        url: cleanUrl
-                    });
-                }
-            }
-        }
-
-        if (items.length === 0) {
-            const allUrls = rawText.match(URL_RE);
-            if (allUrls) {
-                allUrls.forEach((u, i) => {
-                    const cleanUrl = trimUrlPunctuation(u);
-                    const { season, episode } = extractSeasonAndEpisode('', cleanUrl, 1);
-                    items.push({
-                        season: season || 1,
-                        episode: episode || (i + 1),
-                        url: cleanUrl
-                    });
-                });
-            }
-        }
-
-        const seasonMap = {};
-        const seenUrls = new Set();
-
-        for (const item of items) {
-            if (seenUrls.has(item.url)) continue;
-            seenUrls.add(item.url);
-
-            if (!seasonMap[item.season]) {
-                seasonMap[item.season] = {};
-            }
-            seasonMap[item.season][item.episode] = item.url;
-        }
-
-        const sortedSeasons = Object.keys(seasonMap)
-            .map(Number)
-            .sort((a, b) => a - b)
-            .map(sNum => {
-                const epMap = seasonMap[sNum];
-                const sortedEpisodes = Object.keys(epMap)
-                    .map(Number)
-                    .sort((a, b) => a - b)
-                    .map(eNum => ({
-                        ep: eNum,
-                        url: epMap[eNum]
-                    }));
-                return {
-                    season: sNum,
-                    episodes: sortedEpisodes
-                };
-            });
-
-        sortedSeasons.detectedTitle = detectedTitle;
-        return sortedSeasons;
+    setBulkStatus(text, isError = false) {
+        const statusEl = document.getElementById('bulk-parse-status');
+        if (!statusEl) return;
+        statusEl.textContent = text;
+        statusEl.className = `bulk-status-badge${isError ? ' error' : ''}`;
+        statusEl.style.display = text ? 'inline-block' : 'none';
     }
 
     handleBulkSeriesLinks(notify = true) {
         const textarea = document.getElementById('add-series-bulk-links');
-        const statusEl = document.getElementById('bulk-parse-status');
         const clearBtn = document.getElementById('btn-clear-bulk-links');
         if (!textarea) return;
 
         const raw = textarea.value.trim();
-        if (!raw) {
-            if (statusEl) statusEl.style.display = 'none';
-            if (clearBtn) clearBtn.style.display = 'none';
-            return;
-        }
-
-        if (clearBtn) clearBtn.style.display = 'inline-block';
-
-        const parsedSeasons = this.parseStreamtapeLinks(raw);
-        if (!parsedSeasons.length) {
-            if (statusEl) {
-                statusEl.textContent = 'Nem található érvényes link a megadott szövegben.';
-                statusEl.className = 'bulk-status-badge error';
-                statusEl.style.display = 'inline-block';
-            }
-            if (notify) UI.toast('Nem található érvényes link.', 'error');
-            return;
-        }
-
-        // Cím automatikus kitöltése ha a Cím mező még üres
-        const titleInput = document.getElementById('add-title');
-        if (titleInput && !titleInput.value.trim() && parsedSeasons.detectedTitle) {
-            titleInput.value = parsedSeasons.detectedTitle;
-        }
-
-        const editor = document.getElementById('seasons-editor');
-        if (editor) editor.innerHTML = '';
-
-        parsedSeasons.forEach(s => {
-            this.addSeasonBlock(s.episodes, s.season);
-        });
-
-        const totalEps = parsedSeasons.reduce((acc, s) => acc + s.episodes.length, 0);
-        const seasonCount = parsedSeasons.length;
-
-        if (statusEl) {
-            const titleMsg = parsedSeasons.detectedTitle ? ` (${parsedSeasons.detectedTitle})` : '';
-            statusEl.textContent = `✅ Felismerve${titleMsg}: ${seasonCount} évad, ${totalEps} rész!`;
-            statusEl.className = 'bulk-status-badge';
-            statusEl.style.display = 'inline-block';
-        }
-
-        this.updateSeasonsSummaryBadge();
-
-        if (notify) {
-            UI.toast(`Sikeres felismerés: ${seasonCount} évad, ${totalEps} rész betöltve!`, 'success');
-        }
+        if (clearBtn) clearBtn.style.display = raw ? 'inline-block' : 'none';
+        if (!raw) return this.setBulkStatus('');
+        this.applyParsedLinks(parseStreamLinks(raw), { notify });
     }
 
     clearBulkSeriesLinks() {
         const textarea = document.getElementById('add-series-bulk-links');
-        const statusEl = document.getElementById('bulk-parse-status');
         const clearBtn = document.getElementById('btn-clear-bulk-links');
         if (textarea) textarea.value = '';
-        if (statusEl) statusEl.style.display = 'none';
         if (clearBtn) clearBtn.style.display = 'none';
+        this.setBulkStatus('');
     }
+
+    /**
+     * .txt a Streamtape mezőbe: egy link → film, több link → sorozat, évadokra és részekre bontva.
+     * Több linknél a kategória is Sorozatra vált.
+     */
+    async importStreamTxt(file) {
+        if (!file) return;
+        if (!/\.txt$/i.test(file.name) && file.type !== 'text/plain') {
+            return UI.toast('Ide csak .txt fájl tölthető be.', 'error');
+        }
+        if (file.size > 2 * 1024 * 1024) return UI.toast('A .txt fájl túl nagy (legfeljebb 2 MB).', 'error');
+
+        let text = '';
+        try {
+            text = decodeText(await file.arrayBuffer());
+        } catch (e) {
+            return UI.toast('A fájl nem olvasható.', 'error');
+        }
+        const parsed = parseStreamLinks(text);
+        if (!parsed.linkCount) return UI.toast(`A(z) „${file.name}” fájlban nincs link.`, 'error');
+
+        const categoryEl = document.getElementById('add-category');
+        const titleInput = document.getElementById('add-title');
+
+        // Játék nem bontható részekre — ott legfeljebb egy (pl. gameplay) link lehet
+        if (categoryEl.value === 'Játék' && parsed.linkCount > 1) {
+            return UI.toast('Játékhoz csak egy link tartozhat, a fájlban több van.', 'error', 4200);
+        }
+
+        // Egyetlen link, és nem sorozatot szerkesztünk: film
+        if (parsed.linkCount === 1 && categoryEl.value !== 'Sorozat') {
+            const ep = parsed.seasons[0].episodes[0];
+            document.getElementById('add-stream').value = ep.url;
+            if (titleInput && !titleInput.value.trim()) titleInput.value = guessTitle(ep.name) || parsed.title || '';
+            if (!categoryEl.value) {
+                categoryEl.value = 'Film';
+                this.updateStreamFormByCategory();
+            }
+            return UI.toast(`Link betöltve — ${file.name}`, 'success');
+        }
+
+        if (categoryEl.value !== 'Sorozat') {
+            categoryEl.value = 'Sorozat';
+            this.updateStreamFormByCategory();
+            UI.toast('Több link van a fájlban — a kategória Sorozatra váltott.', 'info', 3400);
+        }
+        const textarea = document.getElementById('add-series-bulk-links');
+        if (textarea) textarea.value = text.trim();
+        const clearBtn = document.getElementById('btn-clear-bulk-links');
+        if (clearBtn) clearBtn.style.display = 'inline-block';
+        this.applyParsedLinks(parsed);
+    }
+
+    /* Fájl ráhúzása egy mezőre: kiemelés húzás közben, a fájlok átadása ejtéskor.
+       Sima szöveg ráhúzása továbbra is a mezőbe kerül. */
+    bindFileDrop(zone, onFiles) {
+        const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files');
+        ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
+            if (!hasFiles(e)) return;
+            e.preventDefault();
+            zone.classList.add('drag-over');
+        }));
+        zone.addEventListener('dragleave', (e) => {
+            if (!zone.contains(e.relatedTarget)) zone.classList.remove('drag-over');
+        });
+        zone.addEventListener('drop', (e) => {
+            zone.classList.remove('drag-over');
+            if (!e.dataTransfer?.files?.length) return;
+            e.preventDefault();
+            onFiles(e.dataTransfer.files);
+        });
+    }
+
+    syncTorrentPicker() {
+        const file = document.getElementById('torrent-input')?.files?.[0];
+        const current = this._editOriginal?.torrentFileName;
+        const nameEl = document.getElementById('torrent-name');
+        if (nameEl) {
+            nameEl.textContent = file ? file.name : (current ? `Jelenlegi: ${current}` : 'Nincs kiválasztva');
+            nameEl.classList.toggle('is-set', !!file);
+        }
+        const clear = document.getElementById('torrent-clear');
+        if (clear) clear.hidden = !file;
+    }
+
+    /* ============================================================
+       FELIRATOK (űrlap)
+       ============================================================ */
+
+    /* Az évadszerkesztőben lévő, linkkel rendelkező részek: [{ season, eps: Set }] */
+    formEpisodeIndex() {
+        return this.collectSeasonsFromForm().map(s => ({ season: s.season, eps: new Set(s.episodes.map(e => e.ep)) }));
+    }
+
+    /* A fájlnévből hiányzó évadot / részt az űrlapon lévő részek alapján egészíti ki */
+    placeSubtitle({ season, episode }, index) {
+        let s = season;
+        let e = episode;
+        if (e === null && index.length === 1 && index[0].eps.size === 1) {
+            // Egyetlen rész van: a felirat csak ahhoz tartozhat
+            s = index[0].season;
+            e = [...index[0].eps][0];
+        }
+        if (e !== null && s === null) {
+            const holders = index.filter(x => x.eps.has(e));
+            s = holders.length === 1 ? holders[0].season : (index.length === 1 ? index[0].season : 1);
+        }
+        return { season: s, episode: e };
+    }
+
+    async addSubtitleFiles(fileList) {
+        const all = [...(fileList || [])];
+        const files = all.filter(f => SUB_EXT_RE.test(f.name));
+        const problems = [];
+        // Ha a Converter kimeneti mappájából mindent ráhúznak, a videókat nem soroljuk fel egyenként
+        const others = all.filter(f => !SUB_EXT_RE.test(f.name));
+        if (others.length) problems.push(others.length === 1 ? `${others[0].name}: nem felirat` : `${others.length} nem feliratfájl`);
+        const index = this.formEpisodeIndex();
+        const added = [];
+
+        for (const file of files) {
+            if (file.size > 5 * 1024 * 1024) {
+                problems.push(`${file.name}: túl nagy`);
+                continue;
+            }
+            let text = '';
+            try {
+                text = decodeText(await file.arrayBuffer());
+            } catch (e) {
+                problems.push(`${file.name}: nem olvasható`);
+                continue;
+            }
+            const ext = file.name.match(SUB_EXT_RE)[1].toLowerCase();
+            const content = (ext === 'ass' || ext === 'ssa') ? assToSrt(text) : text;
+            if (!content.includes('-->')) {
+                problems.push(`${file.name}: nincs benne időzített szöveg`);
+                continue;
+            }
+
+            const byName = subtitleNameInfo(file.name);
+            const byText = byName.lang ? null : detectTextLanguage(content);
+            const row = {
+                uid: ++this._subUid,
+                kind: 'new',
+                origName: file.name,
+                content,
+                ext: ext === 'vtt' ? 'vtt' : 'srt',
+                lang: byName.lang || byText || SUB_LANG_UNKNOWN,
+                langSource: byName.lang ? 'fájlnévből' : (byText ? 'a szövegből' : ''),
+                forced: byName.forced,
+                sdh: byName.sdh,
+                ...this.placeSubtitle(subtitleEpisode(file.name), index)
+            };
+            this.subsDraft.push(row);
+            added.push(row);
+        }
+
+        this.renderSubtitleRows();
+
+        if (added.length) {
+            const byLang = new Map();
+            added.forEach(r => byLang.set(r.lang, (byLang.get(r.lang) || 0) + 1));
+            const langs = [...byLang.entries()].map(([code, n]) =>
+                `${n} ${code === SUB_LANG_UNKNOWN ? 'ismeretlen nyelvű' : langLabel(code).toLowerCase()}`);
+            UI.toast(`${added.length} felirat hozzáadva — ${langs.join(', ')}`, 'success');
+        }
+        if (problems.length) UI.toast(`Kihagyva: ${problems.join('; ')}`, 'error', 5200);
+    }
+
+    /* Szerkesztéskor a mappában lévő feliratok — ezek törölhetők, javíthatók */
+    loadExistingSubtitles(t) {
+        const index = this.formEpisodeIndex();
+        this.subsDraft = (t.subtitles || []).map(sub => {
+            const info = subtitleNameInfo(sub.name);
+            return {
+                uid: ++this._subUid,
+                kind: 'existing',
+                id: sub.id,
+                name: sub.name,
+                origName: sub.name,
+                ext: (sub.name.match(/\.(srt|vtt)$/i)?.[1] || 'srt').toLowerCase(),
+                lang: info.lang || SUB_LANG_UNKNOWN,
+                langSource: '',
+                forced: info.forced,
+                sdh: info.sdh,
+                ...this.placeSubtitle(subtitleEpisode(sub.name), index)
+            };
+        });
+        this.renderSubtitleRows();
+    }
+
+    subtitleRowOf(el) {
+        const uid = Number(el?.closest('.sub-row')?.dataset.uid);
+        return this.subsDraft.find(r => r.uid === uid) || null;
+    }
+
+    bindSubtitleList() {
+        const list = document.getElementById('subs-list');
+        if (!list) return;
+
+        list.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-sub-act]');
+            const row = btn && this.subtitleRowOf(btn);
+            if (!row) return;
+            if (btn.dataset.subAct === 'drop') {
+                this.subsDraft = this.subsDraft.filter(r => r !== row);
+                return this.renderSubtitleRows();
+            }
+            if (btn.dataset.subAct === 'toggle') row.remove = !row.remove;
+            if (btn.dataset.subAct === 'keep') row.keepBoth = true;
+            this.refreshSubtitleStates();
+        });
+
+        const onEdit = (e) => {
+            const row = this.subtitleRowOf(e.target);
+            if (!row) return;
+            const num = (v) => (v === '' ? null : toCount(v, null));
+            if (e.target.matches('.sub-lang')) row.lang = e.target.value;
+            else if (e.target.matches('.sub-season')) row.season = num(e.target.value);
+            else if (e.target.matches('.sub-episode')) row.episode = num(e.target.value);
+            else return;
+            row.dirty = true;
+            row.langSource = e.target.matches('.sub-lang') ? '' : row.langSource;
+            this.refreshSubtitleStates();
+        };
+        list.addEventListener('input', onEdit);
+        list.addEventListener('change', onEdit);
+    }
+
+    renderSubtitleRows() {
+        const list = document.getElementById('subs-list');
+        if (!list) return;
+        const isSeries = document.getElementById('add-category')?.value === 'Sorozat';
+        const langs = [...SUB_LANGUAGES.map(l => [l.code, l.label]), [SUB_LANG_UNKNOWN, 'Ismeretlen nyelv']];
+
+        list.innerHTML = this.subsDraft.map(r => `
+            <div class="sub-row${r.kind === 'existing' ? ' is-existing' : ''}" data-uid="${r.uid}">
+                <div class="sub-main">
+                    <span class="sub-name" title="${esc(r.origName)}">${esc(r.origName)}</span>
+                    <span class="sub-meta"></span>
+                </div>
+                <div class="sub-controls">
+                    ${isSeries ? `
+                    <label class="sub-num" title="Évad"><span>É</span><input type="number" class="sub-season" min="0" max="99" value="${r.season ?? ''}" aria-label="Évad"></label>
+                    <label class="sub-num" title="Rész"><span>R</span><input type="number" class="sub-episode" min="0" max="9999" value="${r.episode ?? ''}" aria-label="Rész"></label>` : ''}
+                    <select class="sub-lang" aria-label="Nyelv">${langs.map(([code, label]) =>
+                        `<option value="${code}"${code === r.lang ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>
+                    <span class="sub-state"></span>
+                    <button type="button" class="icon-x" data-sub-act="${r.kind === 'existing' ? 'toggle' : 'drop'}"></button>
+                </div>
+            </div>`).join('');
+        this.refreshSubtitleStates();
+    }
+
+    /**
+     * Végleges fájlnevek: S01E02.hu.srt (filmnél felirat.hu.srt), azonos nyelvnél S01E02.2.hu.srt.
+     * Ha egy új felirat ugyanarra a részre és nyelvre szól, mint egy meglévő, az előbbi lecseréli
+     * az utóbbit (hacsak nem kérik, hogy mindkettő maradjon).
+     */
+    computeSubtitleTargets() {
+        const isSeries = document.getElementById('add-category')?.value === 'Sorozat';
+        const rows = this.subsDraft;
+        const keyOf = (r) => [isSeries ? r.season : '', isSeries ? r.episode : '', r.lang, r.forced ? 1 : 0, r.sdh ? 1 : 0].join('|');
+        const newKeys = new Set(rows.filter(r => r.kind === 'new').map(keyOf));
+        rows.forEach(r => {
+            r.replaced = r.kind === 'existing' && !r.remove && !r.keepBoth && newKeys.has(keyOf(r));
+        });
+
+        const kept = rows.filter(r => !(r.kind === 'existing' && (r.remove || r.replaced)));
+        const untouched = (r) => r.kind === 'existing' && !r.dirty;
+        const taken = new Set(kept.filter(untouched).map(r => r.name.toLowerCase()));
+        const counts = new Map();
+        kept.filter(untouched).forEach(r => {
+            r.target = r.name;
+            counts.set(keyOf(r), (counts.get(keyOf(r)) || 0) + 1);
+        });
+        kept.filter(r => !untouched(r)).forEach(r => {
+            const key = keyOf(r);
+            let dup = (counts.get(key) || 0) + 1;
+            let name = '';
+            for (;; dup++) {
+                name = subtitleDriveName({
+                    season: isSeries ? r.season : null,
+                    episode: isSeries ? r.episode : null,
+                    lang: r.lang, forced: r.forced, sdh: r.sdh, ext: r.ext, dup
+                });
+                if (!taken.has(name.toLowerCase())) break;
+            }
+            counts.set(key, dup);
+            taken.add(name.toLowerCase());
+            r.target = name;
+        });
+        rows.filter(r => !kept.includes(r)).forEach(r => { r.target = ''; });
+    }
+
+    refreshSubtitleStates() {
+        const list = document.getElementById('subs-list');
+        if (!list) return;
+        list.hidden = !this.subsDraft.length;
+        if (!this.subsDraft.length) return;
+
+        const isSeries = document.getElementById('add-category')?.value === 'Sorozat';
+        const index = isSeries ? this.formEpisodeIndex() : [];
+        this.computeSubtitleTargets();
+
+        this.subsDraft.forEach(r => {
+            const row = list.querySelector(`.sub-row[data-uid="${r.uid}"]`);
+            if (!row) return;
+            const gone = r.kind === 'existing' && (r.remove || r.replaced);
+
+            let state = '✓';
+            let tone = 'ok';
+            if (r.remove) [state, tone] = ['törlődik', 'bad'];
+            else if (r.replaced) [state, tone] = ['lecserélődik', 'warn'];
+            else if (isSeries && (r.season == null || r.episode == null)) [state, tone] = ['melyik rész?', 'bad'];
+            else if (isSeries && !index.some(x => x.season === r.season && x.eps.has(r.episode))) [state, tone] = ['nincs ilyen rész', 'warn'];
+            else if (isSeries) state = `S${pad2(r.season)}E${pad2(r.episode)} ✓`;
+
+            const stateEl = row.querySelector('.sub-state');
+            stateEl.textContent = state;
+            stateEl.dataset.tone = tone;
+            row.classList.toggle('is-gone', gone);
+
+            const meta = [];
+            if (!gone && r.target) meta.push(esc(r.target === r.origName ? 'marad így' : `→ ${r.target}`));
+            if (r.langSource) meta.push(`nyelv ${esc(r.langSource)}`);
+            else if (r.kind === 'new' && r.lang === SUB_LANG_UNKNOWN) meta.push('a nyelvet nem sikerült felismerni');
+            if (r.forced) meta.push('forced');
+            if (r.sdh) meta.push('SDH');
+            if (r.replaced) meta.push('<button type="button" class="link-quiet" data-sub-act="keep">mindkettő maradjon</button>');
+            row.querySelector('.sub-meta').innerHTML = meta.join(' · ');
+
+            const btn = row.querySelector('[data-sub-act="toggle"], [data-sub-act="drop"]');
+            if (btn) {
+                const restore = r.kind === 'existing' && r.remove;
+                btn.textContent = restore ? '↺' : '✕';
+                btn.title = restore ? 'Visszaállítás' : (r.kind === 'existing' ? 'Törlés a Drive-ról' : 'Eltávolítás');
+            }
+        });
+    }
+
+    /* Mentési terv a drive.syncSubtitles számára */
+    subtitlePlan() {
+        this.computeSubtitleTargets();
+        const rows = this.subsDraft;
+        const typeOf = (ext) => (ext === 'vtt' ? 'text/vtt' : 'application/x-subrip');
+        return {
+            remove: rows.filter(r => r.kind === 'existing' && (r.remove || r.replaced)).map(r => ({ id: r.id, name: r.name })),
+            rename: rows.filter(r => r.kind === 'existing' && r.target && r.target !== r.name).map(r => ({ id: r.id, name: r.target })),
+            upload: rows.filter(r => r.kind === 'new' && r.target)
+                .map(r => ({ name: r.target, file: new File([r.content], r.target, { type: typeOf(r.ext) }) }))
+        };
+    }
+
+    /* ============================================================
+       ÉVADSZERKESZTŐ
+       ============================================================ */
 
     updateSeasonsSummaryBadge() {
         const badge = document.getElementById('seasons-summary-badge');
-        if (!badge) return;
         const blocks = document.querySelectorAll('#seasons-editor .season-block');
-        if (!blocks.length) {
-            badge.style.display = 'none';
-            return;
+        if (badge) {
+            if (!blocks.length) {
+                badge.style.display = 'none';
+            } else {
+                let totalEps = 0;
+                blocks.forEach(b => { totalEps += b.querySelectorAll('.ep-row').length; });
+                badge.textContent = `${blocks.length} évad · ${totalEps} rész`;
+                badge.style.display = 'inline-block';
+            }
         }
-        let totalEps = 0;
-        blocks.forEach(b => {
-            totalEps += b.querySelectorAll('.ep-row').length;
-        });
-        badge.textContent = `${blocks.length} évad · ${totalEps} rész`;
-        badge.style.display = 'inline-block';
+        // A feliratok „nincs ilyen rész” jelzése a szerkesztővel együtt frissül
+        if (this.subsDraft.length) this.refreshSubtitleStates();
     }
 
-    renumberSeasonsAndEpisodes() {
-        document.querySelectorAll('#seasons-editor .season-block').forEach((block, i) => {
-            const sNum = i + 1;
-            block.dataset.season = sNum;
-            const label = block.querySelector('.season-label');
-            if (label) label.textContent = `${sNum}. évad`;
-        });
-        this.updateSeasonsSummaryBadge();
-    }
-
+    /* Az évad és a rész száma szerkeszthető; törléskor a többi száma NEM változik,
+       így a felismert S01E05-ből sem lesz csendben S01E04. */
     addSeasonBlock(episodes = null, seasonNum = null) {
         const editor = document.getElementById('seasons-editor');
         if (!editor) return;
+        const used = [...editor.querySelectorAll('.season-num')].map(i => toCount(i.value, 0));
+        const sNum = seasonNum ?? (used.length ? Math.max(...used) + 1 : 1);
+
         const block = document.createElement('div');
         block.className = 'season-block';
-        const sNum = seasonNum || (editor.children.length + 1);
-        block.dataset.season = sNum;
         block.innerHTML = `
             <div class="season-head">
-                <span class="label season-label">${sNum}. évad</span>
+                <label class="season-label">
+                    <input type="number" class="season-num" min="0" max="99" value="${sNum}" aria-label="Évad száma">
+                    <span class="label">. évad</span>
+                </label>
                 <button type="button" class="icon-x btn-remove-season" title="Évad törlése">✕</button>
             </div>
             <div class="episodes-editor"></div>
@@ -1909,83 +2091,115 @@ class App {
 
         const list = block.querySelector('.episodes-editor');
         if (episodes?.length) {
-            episodes.forEach((ep, i) => this.addEpisodeRow(list, ep.url, ep.ep || (i + 1)));
+            episodes.forEach((ep, i) => this.addEpisodeRow(list, ep.url, ep.ep ?? (i + 1)));
         } else {
             this.addEpisodeRow(list);
         }
 
         block.querySelector('.btn-remove-season').addEventListener('click', () => {
             block.remove();
-            this.renumberSeasonsAndEpisodes();
+            this.updateSeasonsSummaryBadge();
         });
         block.querySelector('.btn-add-ep').addEventListener('click', () => {
             this.addEpisodeRow(list)?.querySelector('.ep-url')?.focus();
-            this.updateSeasonsSummaryBadge();
         });
+        block.querySelector('.season-num').addEventListener('input', () => this.updateSeasonsSummaryBadge());
         this.updateSeasonsSummaryBadge();
     }
 
     addEpisodeRow(listEl, url = '', epNum = null) {
         if (!listEl) return null;
+        const used = [...listEl.querySelectorAll('.ep-num')].map(i => toCount(i.value, 0));
+        const eNum = epNum ?? (used.length ? Math.max(...used) + 1 : 1);
+
         const row = document.createElement('div');
         row.className = 'ep-row';
-        const eNum = epNum || (listEl.children.length + 1);
-        row.dataset.ep = eNum;
         row.innerHTML = `
-            <span class="ep-num">${String(eNum).padStart(2, '0')}</span>
+            <input type="number" class="ep-num" min="0" max="9999" value="${esc(eNum)}" aria-label="Rész száma">
             <input type="text" class="ep-url" placeholder="https://streamtape.com/v/…" value="${esc(url)}">
             <button type="button" class="icon-x btn-remove-ep" title="Törlés">✕</button>`;
         listEl.appendChild(row);
+
         row.querySelector('.btn-remove-ep').addEventListener('click', () => {
             row.remove();
-            listEl.querySelectorAll('.ep-row').forEach((r, i) => {
-                const newEp = i + 1;
-                r.dataset.ep = newEp;
-                r.querySelector('.ep-num').textContent = String(newEp).padStart(2, '0');
-            });
             this.updateSeasonsSummaryBadge();
         });
+        row.querySelectorAll('input').forEach(inp => inp.addEventListener('input', () => this.updateSeasonsSummaryBadge()));
         this.updateSeasonsSummaryBadge();
         return row;
     }
 
+    /* Az azonos számú évadblokkok összeolvadnak, minden számsorrendbe kerül */
     collectSeasonsFromForm() {
-        const seasons = [];
+        const bySeason = new Map();
         document.querySelectorAll('#seasons-editor .season-block').forEach((block, sIdx) => {
-            const episodes = [];
-            const seasonNum = parseInt(block.dataset.season, 10) || (sIdx + 1);
+            const seasonNum = toCount(block.querySelector('.season-num')?.value, sIdx + 1);
+            const episodes = bySeason.get(seasonNum) || [];
             block.querySelectorAll('.ep-row').forEach((row, eIdx) => {
                 const url = (row.querySelector('.ep-url')?.value || '').trim();
-                const epNum = parseInt(row.dataset.ep, 10) || (eIdx + 1);
-                if (url) episodes.push({ ep: epNum, url });
+                if (url) episodes.push({ ep: toCount(row.querySelector('.ep-num')?.value, eIdx + 1), url });
             });
-            if (episodes.length) seasons.push({ season: seasonNum, episodes });
+            if (episodes.length) bySeason.set(seasonNum, episodes);
         });
-        return seasons;
+        return [...bySeason.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([season, episodes]) => ({ season, episodes: episodes.sort((a, b) => a.ep - b.ep) }));
+    }
+
+    /* „2. évad 3. rész” — ami kétszer szerepel a szerkesztőben */
+    duplicateEpisodes(seasons) {
+        const dupes = [];
+        seasons.forEach(s => {
+            const seen = new Set();
+            s.episodes.forEach(e => {
+                if (seen.has(e.ep)) dupes.push(`${s.season}. évad ${e.ep}. rész`);
+                seen.add(e.ep);
+            });
+        });
+        return dupes;
     }
 
     resetAddForm() {
         document.getElementById('add-form')?.reset();
         document.getElementById('edit-torrent-id').value = '';
+        this._editOriginal = null;
         this.setText('add-modal-title', 'Új tartalom');
         this.setText('add-submit-text', 'Feltöltés');
         const editor = document.getElementById('seasons-editor');
         if (editor) editor.innerHTML = '';
-        const preview = document.getElementById('cover-preview');
-        if (preview) preview.hidden = true;
+        this.setCoverPreview(null);
+        const desc = document.getElementById('add-description');
+        if (desc) desc.disabled = false;
+        this.subsDraft = [];
         this.clearBulkSeriesLinks();
         this.updateStreamFormByCategory();
         this.updateSeasonsSummaryBadge();
+        this.syncTorrentPicker();
     }
 
     openEditModal(torrentId) {
         const t = this.torrents.find(x => x.id === torrentId);
         if (!t || !isAdmin()) return;
 
+        // A részletek nézetből nyitva a lejátszót is le kell állítani, különben tovább szól
+        if (document.getElementById('detail-modal')?.classList.contains('active')) this.closeDetail();
+
         this.resetAddForm();
         document.getElementById('edit-torrent-id').value = torrentId;
         this.setText('add-modal-title', `Szerkesztés — ${t.title}`);
         this.setText('add-submit-text', 'Mentés');
+
+        // Amit a felhasználó kiürít, az a Drive-ról is törlődik — ehhez kell a kiinduló állapot
+        this._editOriginal = {
+            magnetLink: t.magnetLink || '',
+            downloadUrl: t.downloadUrl || '',
+            description: t.description || '',
+            descriptionCut: !!t.descriptionCut,
+            trailers: !!t.trailers?.length,
+            streamUrl: t.streamUrl || '',
+            hasSeasons: this.playableInfo(t).epCount > 0,
+            torrentFileName: t.torrentFileName || ''
+        };
 
         document.getElementById('add-title').value = t.title || '';
         document.getElementById('add-category').value = t.category || '';
@@ -1995,6 +2209,7 @@ class App {
         document.getElementById('add-trailers').value = (t.trailers || []).join('\n');
         const magyarEl = document.getElementById('add-magyar');
         if (magyarEl) magyarEl.checked = !!t.isMagyar;
+        if (t.coverUrl) this.setCoverPreview(this.thumb(t.coverUrl, 800));
 
         this.updateStreamFormByCategory();
 
@@ -2002,7 +2217,7 @@ class App {
         if (t.category === 'Sorozat') {
             const editor = document.getElementById('seasons-editor');
             if (editor) editor.innerHTML = '';
-            if (t.seasons?.length) t.seasons.forEach((s, idx) => this.addSeasonBlock(s.episodes, s.season || (idx + 1)));
+            if (t.seasons?.length) t.seasons.forEach((s, idx) => this.addSeasonBlock(s.episodes, s.season ?? (idx + 1)));
             else if (t.episodes?.length) this.addSeasonBlock(t.episodes, 1);
             else this.addSeasonBlock(null, 1);
             this.updateSeasonsSummaryBadge();
@@ -2010,8 +2225,32 @@ class App {
             document.getElementById('add-stream').value = t.streamUrl;
         }
 
-        UI.closeModal('detail-modal');
+        this.loadExistingSubtitles(t);
+        this.syncTorrentPicker();
+        this.loadFullDescription(t);
+
         UI.openModal('add-modal');
+    }
+
+    /* A gyorsítótárban a leírás 600 karakterre van vágva — szerkesztéshez a teljes szöveg kell,
+       különben a mentés a csonka változatot írná vissza. */
+    loadFullDescription(t) {
+        const descEl = document.getElementById('add-description');
+        if (!descEl || !t.descriptionFileId || (t.description && !t.descriptionCut)) return;
+
+        const placeholder = descEl.placeholder;
+        descEl.disabled = true;
+        descEl.placeholder = 'Leírás betöltése…';
+        driveAPI.readTextFile(t.descriptionFileId, t.title).then(text => {
+            if (!text?.trim() || document.getElementById('edit-torrent-id').value !== t.id) return;
+            t.description = text.trim();
+            delete t.descriptionCut;
+            descEl.value = t.description;
+            if (this._editOriginal) Object.assign(this._editOriginal, { description: t.description, descriptionCut: false });
+        }).catch(() => {}).finally(() => {
+            descEl.disabled = false;
+            descEl.placeholder = placeholder;
+        });
     }
 
     async handleAddTorrent() {
@@ -2025,11 +2264,39 @@ class App {
         const trailers = trailersRaw ? trailersRaw.split('\n').map(u => u.trim()).filter(Boolean) : [];
         const coverFile = document.getElementById('cover-input').files[0];
         const torrentFile = document.getElementById('torrent-input').files[0];
-        const description = document.getElementById('add-description').value.trim();
+        let description = document.getElementById('add-description').value.trim();
         const isMagyar = (category === 'Film' || category === 'Sorozat') && !!document.getElementById('add-magyar')?.checked;
-        const seasons = category === 'Sorozat' ? this.collectSeasonsFromForm() : null;
+        const isSeries = category === 'Sorozat';
+        const seasons = isSeries ? this.collectSeasonsFromForm() : null;
 
         if (!title || !category) return UI.toast('A cím és a kategória kötelező.', 'error');
+
+        if (category === 'Játék' && this.subsDraft.some(r => r.kind === 'new')) {
+            UI.toast('Játékhoz nem tartozik felirat — a hozzáadott feliratok nem töltődnek fel.', 'info', 4200);
+        }
+
+        const dupes = isSeries ? this.duplicateEpisodes(seasons) : [];
+        if (dupes.length) return UI.toast(`Kétszer szerepel: ${dupes.slice(0, 3).join(', ')}${dupes.length > 3 ? '…' : ''}`, 'error', 5000);
+
+        if (isSeries) {
+            const unplaced = this.subsDraft.filter(r =>
+                (r.kind === 'new' || (r.dirty && !r.remove)) && (r.season == null || r.episode == null));
+            if (unplaced.length) return UI.toast(`${unplaced.length} feliratnál add meg, melyik részhez tartozik.`, 'error', 4200);
+        }
+
+        // Szerkesztés: a kiürített mezők fájljai törlődnek (de csak ha tényleg volt bennük valami)
+        const orig = this._editOriginal || {};
+        const clear = [];
+        if (editId) {
+            // A betöltetlen, csonka leírást nem írjuk vissza
+            if (orig.descriptionCut && description === orig.description.trim()) description = '';
+            else if (orig.description && !description) clear.push('description');
+            if (orig.magnetLink && !magnetLink) clear.push('magnet');
+            if (orig.downloadUrl && !downloadUrl) clear.push('download');
+            if (orig.trailers && !trailers.length) clear.push('trailers');
+            if (orig.streamUrl && (isSeries || !streamUrl)) clear.push('stream');
+            if (orig.hasSeasons && (!isSeries || !seasons.length)) clear.push('episodes');
+        }
 
         const btn = document.getElementById('add-submit-btn');
         btn.disabled = true;
@@ -2039,11 +2306,13 @@ class App {
         try {
             const payload = {
                 title, category, coverFile, magnetLink, torrentFile, description,
-                streamUrl: category === 'Sorozat' ? '' : streamUrl,
-                downloadUrl, trailers, seasons, isMagyar
+                streamUrl: isSeries ? '' : streamUrl,
+                downloadUrl, trailers, seasons, isMagyar,
+                // Játéknál a (rejtett) feliratblokkhoz nem nyúlunk
+                subtitlePlan: this.subsDraft.length && category !== 'Játék' ? this.subtitlePlan() : null
             };
             if (editId) {
-                await driveAPI.updateTorrent(editId, payload);
+                await driveAPI.updateTorrent(editId, { ...payload, clear });
                 UI.toast('Mentve.', 'success');
             } else {
                 await driveAPI.addTorrent(payload);

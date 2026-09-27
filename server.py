@@ -24,6 +24,10 @@ MAGNET_RE = re.compile(r'magnet:\?xt=urn:[^\s"\'<>]+', re.IGNORECASE)
 # Nyilvános szerveren csak ezekre proxyzunk — különben bárki ingyenes proxynak használhatná
 VIDEO_HOST_RE = re.compile(r"(^|\.)(streamtape\.[a-z]+|tapecontent\.net)$", re.IGNORECASE)
 
+DRIVE_ID_RE = re.compile(r"[A-Za-z0-9_-]{10,200}")
+# A /api/read_text?raw=1 legfeljebb ekkora fájlt ad vissza (feliratokhoz bőven elég)
+RAW_LIMIT = 5 * 1024 * 1024
+
 # A kliens megszakított kérései (AbortController) ezekkel a hibákkal jelentkeznek
 CLIENT_GONE = (ConnectionAbortedError, ConnectionResetError, BrokenPipeError, OSError)
 
@@ -74,19 +78,21 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"response error: {e}")
 
-    def _drive_text(self, file_id, meta_timeout=2.5, download_timeout=3):
-        """Drive szövegfájl tartalma: előbb a description metaadat, aztán a letöltés."""
-        try:
-            meta_url = (
-                f"https://www.googleapis.com/drive/v3/files/{file_id}"
-                f"?fields=description&key={API_KEY}"
-            )
-            with http_get(meta_url, meta_timeout) as resp:
-                description = json.loads(resp.read().decode("utf-8")).get("description") or ""
-                if description.strip():
-                    return description.strip()
-        except Exception:
-            pass
+    def _drive_text(self, file_id, meta_timeout=2.5, download_timeout=3, use_description=True):
+        """Drive szövegfájl tartalma: előbb a description metaadat, aztán a letöltés.
+        use_description=False: a description csonka volt (nagyon hosszú episodes.json), a fájl kell."""
+        if use_description:
+            try:
+                meta_url = (
+                    f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                    f"?fields=description&key={API_KEY}"
+                )
+                with http_get(meta_url, meta_timeout) as resp:
+                    description = json.loads(resp.read().decode("utf-8")).get("description") or ""
+                    if description.strip():
+                        return description.strip()
+            except Exception:
+                pass
 
         try:
             uc_url = f"https://drive.google.com/uc?export=download&id={file_id}"
@@ -95,6 +101,33 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"Drive uc fallback for {file_id}: {e}")
             return ""
+
+    def _drive_raw(self, file_id):
+        """Drive fájl bájtjai változatlanul (felirat: a kódolást a böngésző ismeri fel).
+        Méretkorláttal, hogy a szerver ne legyen általános Drive-letöltő proxy."""
+        urls = (
+            f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media&key={API_KEY}",
+            f"https://drive.google.com/uc?export=download&id={file_id}",
+        )
+        for url in urls:
+            try:
+                with http_get(url, 8) as resp:
+                    content_type = (resp.headers.get("Content-Type") or "").lower()
+                    data = resp.read(RAW_LIMIT + 1)
+            except Exception as e:
+                print(f"Drive raw read for {file_id}: {e}")
+                continue
+            if len(data) > RAW_LIMIT:
+                return self._respond(413, b"File too large")
+            # Bejelentkező vagy vírusellenőrzés-figyelmeztető oldal — nem a fájl
+            if "text/html" in content_type:
+                continue
+            return self._respond(
+                200, data,
+                content_type="application/octet-stream",
+                extra_headers={"Cache-Control": "no-store"},
+            )
+        return self._respond(404, b"Not found")
 
     def do_GET(self):
         parsed_path = urllib.parse.urlparse(self.path)
@@ -106,9 +139,16 @@ class TorrentProxyHandler(http.server.SimpleHTTPRequestHandler):
             torrent_title = params.get("title", [""])[0]
             if not file_id:
                 return self._respond(400, b"Missing file id")
+            # A Drive azonosító csak betű, szám, - és _ lehet — más nem kerülhet a lekért URL-be
+            if not DRIVE_ID_RE.fullmatch(file_id):
+                return self._respond(400, b"Bad file id")
+
+            # raw=1: a fájl bájtjai változatlanul (felirat)
+            if params.get("raw", [""])[0] == "1":
+                return self._drive_raw(file_id)
 
             try:
-                text_content = self._drive_text(file_id)
+                text_content = self._drive_text(file_id, use_description=params.get("nodesc", [""])[0] != "1")
                 match = MAGNET_RE.search(text_content)
                 result_text = match.group(0) if match else text_content.strip()
 
