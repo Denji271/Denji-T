@@ -18,12 +18,23 @@ const FIRST_TIMEOUT = 20000;                // az első válaszra eddig várunk,
 const STALL_TIMEOUT = 20000;                // ha ennyi ideig nem jön adat, újrakezdjük a letöltést
 const MAX_EVENT = 4 * 60 * 1000;            // egy válasz legfeljebb eddig tartja életben a háttérprogramot
 const IDLE_CLOSE = 2 * 60 * 1000;           // ennyi tétlenség után (bezárt lejátszó) felszabadítjuk
+const REFRESH_EVERY = 30000;                // legfeljebb ilyen sűrűn kérünk új linket az oldaltól
 const VIDEO_PATH = /\/api\/(stream|proxy_video)$/;
 
-const feeds = new Map();                    // videó URL → Feed
+const feeds = new Map();                    // videó URL → Feed (link frissítés után a régi URL is ide mutat)
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+
+/* Az oldal új linket adott (Feed.refresh): onnan töltünk tovább, a letöltött rész megmarad */
+self.addEventListener('message', (event) => {
+    const { type, old, url } = event.data || {};
+    const feed = type === 'denjit-refreshed' && url ? feeds.get(old) : null;
+    if (!feed || feed.closed) return;
+    feed.src = url;
+    feeds.set(url, feed);
+    feed.failures = 0;
+});
 
 self.addEventListener('fetch', (event) => {
     const req = event.request;
@@ -91,7 +102,7 @@ async function serve(event, url, start, end) {
 function feedFor(url) {
     let feed = feeds.get(url);
     if (!feed) {
-        for (const old of feeds.values()) old.close();
+        for (const old of new Set(feeds.values())) old.close();
         feed = new Feed(url);
         feeds.set(url, feed);
     }
@@ -104,18 +115,19 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
    pozíciója (pos) előtt AHEAD bájtnyi, mögötte BEHIND bájtnyi */
 class Feed {
     constructor(url) {
-        this.url = url;
+        this.src = url;                     // innen töltünk (a régi szervernél a token-link frissülhet)
         this.size = null;
         this.type = 'video/mp4';
         this.chunks = new Map();            // darab sorszáma → Uint8Array
         this.waiting = new Map();           // darab sorszáma → [{ resolve, reject }]
         this.pos = 0;                       // eddig adtuk oda a lejátszónak (bájt)
-        this.job = null;                    // folyó letöltés: { idx, ctrl, moved }
+        this.job = null;                    // folyó letöltés: { idx, stop, ctrl, moved }
         this.failures = 0;
         this.closed = false;
         this.error = null;
         this.wake = null;
         this.usedAt = Date.now();
+        this.refreshedAt = 0;
         this.ready = new Promise((resolve, reject) => { this.readyOk = resolve; this.readyFail = reject; });
         this.ready.catch(() => {});
         this.run();
@@ -133,12 +145,13 @@ class Feed {
         return idx >= Math.floor(this.pos / CHUNK) && idx <= Math.floor((this.pos + AHEAD) / CHUNK);
     }
 
-    /* A lejátszó idáig ért, vagy ide tekert */
+    /* A lejátszó idáig ért, vagy ide tekert: ha a folyó letöltés már nem ide visz, leállítjuk */
     seek(pos) {
         this.pos = pos;
         this.usedAt = Date.now();
         const job = this.job;
-        if (job && !this.inWindow(job.idx) && !this.waiting.size) {
+        const serves = (w) => this.inWindow(w) && w >= job.idx && w <= job.stop;
+        if (job && !this.inWindow(job.idx) && ![...this.waiting.keys()].some(serves)) {
             job.moved = true;
             job.ctrl.abort();
         }
@@ -180,15 +193,27 @@ class Feed {
         }
     }
 
-    /* A következő letöltendő darab; null, ha van elég előre */
+    /* A következő letöltendő darab; null, ha van elég előre. Elsőbbség: amire a legutóbbi
+       (tekerés utáni) helyen várnak, aztán az előretöltés, végül a régebbi kérések */
     next() {
         const missing = [...this.waiting.keys()].filter((i) => !this.chunks.has(i));
-        if (missing.length) return Math.min(...missing);
+        const near = missing.filter((i) => this.inWindow(i));
+        if (near.length) return Math.min(...near);
         const total = this.chunkCount;
         let idx = Math.floor(this.pos / CHUNK);
         while (idx < total && this.chunks.has(idx)) idx++;
-        if (idx >= total || idx * CHUNK - this.pos >= AHEAD - REFILL) return null;
-        return idx;
+        if (idx < total && idx * CHUNK - this.pos < AHEAD - REFILL) return idx;
+        return missing.length ? Math.min(...missing) : null;
+    }
+
+    /* A szerver elutasította a letöltést (a régi szervernél: lejárt token-link): új linket
+       kérünk az oldaltól, az a válaszban (message esemény) adja meg */
+    async refresh() {
+        if (Date.now() - this.refreshedAt < REFRESH_EVERY) return;
+        this.refreshedAt = Date.now();
+        for (const client of await self.clients.matchAll({ type: 'window' })) {
+            client.postMessage({ type: 'denjit-refresh', url: this.src });
+        }
     }
 
     poke() {
@@ -214,6 +239,7 @@ class Feed {
                 if (job.moved) continue;   // tekerés: máshonnan kell folytatni
                 // Az első kérés hibájánál nem erőltetjük: a lejátszó egyből a hálózatról kapja
                 if (this.size === null) return this.close(e);
+                if (e.status) this.refresh();
                 // A már letöltött rész megmarad, abból megy tovább a lejátszás, közben újrapróbáljuk.
                 // Aki a még hiányzó részre vár, néhány sikertelen próba után hibát kap (a lejátszó újratölt).
                 if (++this.failures >= RETRIES) this.rejectWaiting(e);
@@ -232,11 +258,12 @@ class Feed {
             if (this.chunks.has(i)) { stop = i - 1; break; }
         }
         stop = Math.min(stop, this.chunkCount - 1);
+        job.stop = stop;
 
         const timer = this.size === null ? setTimeout(() => job.ctrl.abort(), FIRST_TIMEOUT) : 0;
         let res;
         try {
-            res = await fetch(this.url, {
+            res = await fetch(this.src, {
                 headers: { Range: `bytes=${idx * CHUNK}-${(stop + 1) * CHUNK - 1}` },
                 signal: job.ctrl.signal,
                 cache: 'no-store',
@@ -246,7 +273,7 @@ class Feed {
         }
         const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(res.headers.get('Content-Range') || '');
         if (res.status !== 206 || !m || Number(m[1]) !== idx * CHUNK) {
-            throw new Error(`váratlan válasz (${res.status})`);
+            throw Object.assign(new Error(`váratlan válasz (${res.status})`), { status: res.status });
         }
         if (this.size === null) {
             this.size = Number(m[3]);
@@ -300,7 +327,7 @@ class Feed {
         this.readyFail(error);
         this.rejectWaiting(error);
         this.chunks.clear();
-        if (feeds.get(this.url) === this) feeds.delete(this.url);
+        for (const [url, feed] of feeds) if (feed === this) feeds.delete(url);
         this.poke();
     }
 }
