@@ -45,12 +45,40 @@ class App {
         this.player = new Player(
             document.getElementById('cinema-player-wrapper'),
             document.getElementById('cinema-player-video'));
+        this.registerPrefetch();
         this.bindEvents();
 
         if (isLoggedIn()) this.showMainPage();
         else this.showLoginPage();
 
         try { await this.syncPasscodesFromDrive(); } catch (e) {}
+    }
+
+    /* Előretöltés (sw.js): a böngésző magától csak ~20 mp-et tölt előre a videóból,
+       a háttérprogram percekkel előre. Safari / iPhone kimarad: ott a rendszer
+       lejátszója tölt, és a Service Worker videókezelése nem megbízható. */
+    registerPrefetch() {
+        const ua = navigator.userAgent;
+        const webkitOnly = /AppleWebKit/.test(ua) && !/Chrome|Chromium|Android/.test(ua);
+        if (!('serviceWorker' in navigator) || webkitOnly) return;
+        navigator.serviceWorker.addEventListener('message', (e) => this.refreshForPrefetch(e));
+        navigator.serviceWorker.register('sw.js')
+            .catch(e => console.warn('Az előretöltés nem indult el:', e));
+    }
+
+    /* A háttérprogramtól a szerver elutasította a letöltést (a régi szervernél: lejárt
+       token-link): új linket oldunk fel, és visszaküldjük, így a letöltött rész megmarad */
+    async refreshForPrefetch(e) {
+        if (e.data?.type !== 'denjit-refresh') return;
+        const entry = [...this._streamCache].find(([, hit]) => new URL(hit.proxy, location.href).href === e.data.url);
+        if (!entry) return;
+        this._streamCache.delete(entry[0]);
+        try {
+            const url = await this.resolveStream(entry[0]);
+            e.source?.postMessage({ type: 'denjit-refreshed', old: e.data.url, url });
+        } catch (err) {
+            console.warn('Új link kérése sikertelen:', err);
+        }
     }
 
     showLoginPage() {
@@ -1383,9 +1411,11 @@ class App {
             };
             this.player?.attach({
                 ...ctx,
-                // Újratöltéskor friss link kell: a régi szerver tokenes linkje addigra lejárhatott
+                // Újratöltéskor friss link kell: a régi szerver tokenes linkje addigra lejárhatott.
+                // Ha a háttérprogram épp most kért újat, azt használjuk: így megmarad az előretöltése.
                 reload: () => {
-                    this._streamCache.delete(url);
+                    const hit = this._streamCache.get(url);
+                    if (!hit || Date.now() - hit.at > 30000) this._streamCache.delete(url);
                     return this.resolveStream(url);
                 },
                 onFail: fail
