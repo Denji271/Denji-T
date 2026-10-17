@@ -12,6 +12,11 @@ const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 const SEEK_STEP = 10;
 const HIDE_DELAY = 2500;
 const NEXT_COUNTDOWN = 10;
+const STALL_LIMIT = 15000;      // ennyi ideig tölthet egy helyben, utána újratöltjük
+// Az egymás utáni újratöltések előtti várakozás (ms); ha mind elfogy, feladjuk.
+// Együtt kb. fél perc: egy rövid net- vagy szerverkiesést így kivár.
+const RECOVER_DELAYS = [2000, 5000, 10000, 20000];
+const RECOVER_WINDOW = 60000;   // ennyi idő után az újratöltések száma újraindul
 
 const svgIcon = (body, filled) => `<svg viewBox="0 0 24 24" aria-hidden="true" ${filled
     ? 'fill="currentColor"'
@@ -60,7 +65,7 @@ class Player {
     constructor(box, video) {
         this.box = box;
         this.video = video;
-        this.ctx = null;            // { key, title, subtitles, onNext, nextLabel, onPrev }
+        this.ctx = null;            // { key, title, subtitles, onNext, nextLabel, onPrev, reload, onFail }
         this.rate = 1;
         this.subIndex = -1;
         this._sub = null;           // { el, url }
@@ -72,6 +77,13 @@ class Player {
         this._hideT = 0;
         this._resumeT = 0;
         this._nextT = 0;
+        this._stallT = 0;
+        this._retryT = 0;
+        this._played = false;       // elindult-e már a lejátszás (csak ekkor töltünk újra)
+        this._recoverN = 0;
+        this._recoverAt = 0;
+        this._quietResume = false;  // újratöltés után szó nélkül ugrunk vissza
+        this._wantPlay = false;     // a néző lejátszást akar-e (a hálózati hiba a böngészőben megállítja a videót)
         this._raf = 0;
         this._lastTap = 0;
         this._lastPointer = '';
@@ -161,19 +173,27 @@ class Player {
         const on = (type, fn) => v.addEventListener(type, (e) => { if (this.ctx) fn(e); });
 
         on('play', () => {
+            this._wantPlay = true;
             this.cancelNext();
             this.box.classList.remove('pl-paused');
             this.syncPlayIcon();
             this.poke();
         });
         on('pause', () => {
+            if (!v.error) this._wantPlay = false;   // hiba miatti megállás: újratöltés után menjen tovább
+            clearTimeout(this._stallT);
             this.box.classList.add('pl-paused');
             this.syncPlayIcon();
             this.stopLoop();
             this.savePos();
         });
-        on('playing', () => { this.setLoading(false); this.startLoop(); });
-        on('waiting', () => this.setLoading(true));
+        on('playing', () => {
+            clearTimeout(this._stallT);
+            this._played = true;
+            this.setLoading(false);
+            this.startLoop();
+        });
+        on('waiting', () => { this.setLoading(true); this.watchStall(); });
         on('canplay', () => this.setLoading(false));
         on('seeking', () => this.render());
         on('seeked', () => { this.setLoading(false); this.render(); });
@@ -318,6 +338,10 @@ class Player {
 
         const saved = this.ctx.key ? Store.get(KEY_POS, {})[this.ctx.key] : null;
         this._resumeTo = saved?.t > 30 ? saved.t : null;
+        this._played = false;
+        this._recoverN = 0;
+        this._quietResume = false;
+        this._wantPlay = false;
 
         if (this.ctx.subtitles.length && Store.get(KEY_SUBS, false)) this.selectSub(this.preferredSub());
     }
@@ -331,6 +355,8 @@ class Player {
         this.clearSub();
         this.stopLoop();
         clearTimeout(this._hideT);
+        clearTimeout(this._stallT);
+        clearTimeout(this._retryT);
         this._dragT = null;
         this._resumeTo = null;
         this.ctx = null;
@@ -377,12 +403,63 @@ class Player {
         this.el.dur.textContent = fmtTime(v.duration);
         this.el.seek.setAttribute('aria-valuemax', Math.floor(v.duration) || 0);
         const to = this._resumeTo;
+        const quiet = this._quietResume;
         this._resumeTo = null;
-        if (to && v.duration - to > 60) {
+        this._quietResume = false;
+        if (to && quiet) {
+            v.currentTime = to;     // újratöltés után: oda, ahol elakadt
+        } else if (to && v.duration - to > 60) {
             v.currentTime = to;
             this.showResume(to);
         }
         this.render();
+    }
+
+    /* ---------------- Elakadás ---------------- */
+
+    /* Ha a videó STALL_LIMIT ideig egy helyben tölt, újratöltjük; ha az sem segít, feladjuk */
+    watchStall() {
+        clearTimeout(this._stallT);
+        if (!this._played) return;
+        const t = this.video.currentTime;
+        this._stallT = setTimeout(() => {
+            const v = this.video;
+            if (!this.ctx || v.paused || v.currentTime !== t) return;
+            if (!this.recover()) this.ctx.onFail?.();
+        }, STALL_LIMIT);
+    }
+
+    /* Elakadt vagy megszakadt lejátszás: friss forrással újratölti, és onnan folytatja,
+       ahol tartott. false, ha nincs mit újratölteni vagy elfogytak a próbálkozások. */
+    recover() {
+        const v = this.video;
+        const ctx = this.ctx;
+        if (!ctx || !this._played) return false;
+        if (Date.now() - this._recoverAt > RECOVER_WINDOW) this._recoverN = 0;
+        const delay = RECOVER_DELAYS[this._recoverN];
+        if (delay === undefined) return false;
+        this._recoverN++;
+        this._recoverAt = Date.now();
+
+        clearTimeout(this._stallT);
+        clearTimeout(this._retryT);
+        const t = this._resumeTo ?? v.currentTime;
+        this.setLoading(true);
+        this._retryT = setTimeout(async () => {
+            let src = v.currentSrc || v.src;
+            try {
+                src = (await ctx.reload?.()) || src;
+            } catch (e) {
+                console.warn('Új link kérése sikertelen, a régivel próbáljuk:', e);
+            }
+            if (this.ctx !== ctx) return;   // közben bezárta vagy másik részre váltott
+            this._resumeTo = t > 0 ? t : null;
+            this._quietResume = true;
+            v.src = src;
+            v.load();
+            if (this._wantPlay) v.play().catch(() => {});
+        }, delay);
+        return true;
     }
 
     /* ---------------- Folytatás ---------------- */

@@ -1369,14 +1369,27 @@ class App {
         this.resolveStream(url).then(proxyUrl => {
             if (token !== this._playToken) return;   // közben másik részre váltott
             // A feloldás sikerült, de a proxy mégsem ad videót (lejárt token, szerverhiba)
-            video.onerror = () => {
+            const fail = () => {
                 if (token !== this._playToken) return;
                 const err = video.error;
                 this._streamCache.delete(url);
                 this.stopVideo(video);
                 fallback(err);
             };
-            this.player?.attach(ctx);
+            video.onerror = () => {
+                // Lejátszás közben előbb újratöltéssel próbálkozunk, onnan folytatva, ahol tartott
+                if (token === this._playToken && this.player?.recover()) return;
+                fail();
+            };
+            this.player?.attach({
+                ...ctx,
+                // Újratöltéskor friss link kell: a régi szerver tokenes linkje addigra lejárhatott
+                reload: () => {
+                    this._streamCache.delete(url);
+                    return this.resolveStream(url);
+                },
+                onFail: fail
+            });
             video.src = proxyUrl;
             video.style.display = 'block';
             video.play().catch(() => {});            // autoplay tiltás esetén csendben marad
