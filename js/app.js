@@ -45,12 +45,24 @@ class App {
         this.player = new Player(
             document.getElementById('cinema-player-wrapper'),
             document.getElementById('cinema-player-video'));
+        this.registerPrefetch();
         this.bindEvents();
 
         if (isLoggedIn()) this.showMainPage();
         else this.showLoginPage();
 
         try { await this.syncPasscodesFromDrive(); } catch (e) {}
+    }
+
+    /* Előretöltés (sw.js): a böngésző magától csak ~20 mp-et tölt előre a videóból,
+       a háttérprogram percekkel előre. Safari / iPhone kimarad: ott a rendszer
+       lejátszója tölt, és a Service Worker videókezelése nem megbízható. */
+    registerPrefetch() {
+        const ua = navigator.userAgent;
+        const webkitOnly = /AppleWebKit/.test(ua) && !/Chrome|Chromium|Android/.test(ua);
+        if (!('serviceWorker' in navigator) || webkitOnly) return;
+        navigator.serviceWorker.register('sw.js')
+            .catch(e => console.warn('Az előretöltés nem indult el:', e));
     }
 
     showLoginPage() {
